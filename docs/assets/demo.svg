@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 300" width="860" height="300" role="img" aria-labelledby="demo-title demo-desc">
+  <title id="demo-title">cindervm toolchain flow</title>
+  <desc id="demo-desc">A left-to-right pipeline. A .cdx source file passes through cinderc build, which assembles then admits it through the verifier, producing a sealed .cdxb image. cinderc run drives the verified image through the interpreter step loop, which halts with an exit code. Verification is a gate before execution, never a runtime mode.</desc>
+  <defs>
+    <style>
+      .box  { fill:#161b22; stroke:#3a4250; stroke-width:1.5; }
+      .gate { fill:#20140c; stroke:#e2521b; stroke-width:2; }
+      .lbl  { font-family:-apple-system,"Segoe UI",sans-serif; font-size:13px; fill:#e6edf3; font-weight:600; }
+      .sub  { font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; fill:#8b949e; }
+      .cmd  { font-family:"SFMono-Regular",Consolas,monospace; font-size:12px; fill:#ffc061; }
+      .flow { stroke:#c3ccd8; stroke-width:2; fill:none; }
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#c3ccd8"/>
+    </marker>
+  </defs>
+
+  <rect width="860" height="300" rx="10" fill="#12161c"/>
+  <rect x="0.5" y="0.5" width="859" height="299" rx="10" fill="none" stroke="#30363d"/>
+  <text class="lbl" x="24" y="34">build path: assemble, verify, seal, run</text>
+
+  <!-- source -->
+  <rect class="box" x="24" y="96" width="120" height="70" rx="6"/>
+  <text class="lbl" x="84" y="128" text-anchor="middle">triage.cdx</text>
+  <text class="sub" x="84" y="148" text-anchor="middle">macro assembler</text>
+
+  <!-- assemble -->
+  <rect class="box" x="196" y="96" width="120" height="70" rx="6"/>
+  <text class="lbl" x="256" y="122" text-anchor="middle">assemble</text>
+  <text class="sub" x="256" y="140" text-anchor="middle">lex, parse,</text>
+  <text class="sub" x="256" y="154" text-anchor="middle">resolve, encode</text>
+
+  <!-- verify gate -->
+  <rect class="gate" x="368" y="96" width="120" height="70" rx="6"/>
+  <text class="lbl" x="428" y="122" text-anchor="middle" fill="#ffc061">verify::admit</text>
+  <text class="sub" x="428" y="140" text-anchor="middle">CFG fixpoint,</text>
+  <text class="sub" x="428" y="154" text-anchor="middle">types, stack, pending</text>
+
+  <!-- image -->
+  <rect class="box" x="540" y="96" width="120" height="70" rx="6"/>
+  <text class="lbl" x="600" y="128" text-anchor="middle">triage.cdxb</text>
+  <text class="sub" x="600" y="148" text-anchor="middle">sealed, checksummed</text>
