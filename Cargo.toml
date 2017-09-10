@@ -1,0 +1,51 @@
+[package]
+name = "cindervm"
+version = "0.4.2"
+edition = "2021"
+rust-version = "1.78"
+description = "A deterministic bytecode virtual machine for agent execution, with a verifying assembler and serializable continuations"
+repository = "https://github.com/ashish/cindervm"
+license = "MIT"
+readme = "README.md"
+keywords = ["vm", "bytecode", "agents", "determinism", "continuations"]
+categories = ["development-tools", "emulators"]
+exclude = ["docs/assets/*", "corpus/*", ".github/*"]
+
+[lib]
+name = "cindervm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cinderc"
+path = "src/bin/cinderc.rs"
+
+[[bin]]
+name = "cinder"
+path = "src/bin/cinder.rs"
+
+[[bin]]
+name = "cinder-fuzz"
+path = "src/bin/cinder_fuzz.rs"
+
+[features]
+default = ["wire"]
+wire = []
+trace-hooks = []
+unstable-jit = []
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.bench]
+inherits = "release"
+debug = 1
+strip = "none"
+
+[profile.fuzz]
+inherits = "release"
+opt-level = 2
+debug-assertions = true
