@@ -126,3 +126,131 @@ diagnostic code, or lists every known code when the argument is unrecognised.
 <img src="docs/assets/demo.svg" alt="Toolchain flow: cinderc build assembles and verifies a .cdx file into a sealed .cdxb image, which cinderc run then executes step by step" width="860">
 </div>
 
+## The instruction set
+
+`cdx/4`, defined once in `src/isa.rs` as a `const` table (opcode, operand
+shape, stack effect, type rule, effect class). The assembler mnemonics, the
+disassembler, and the verifier's transfer functions all read from that single
+table, and `cinderc --emit-isa-md` renders it. Encoding is fixed 4-byte
+(`INSN_LEN = 4`) with a wide prefix (`0xFF`) promoting the operand field for
+large constant pools.
+
+The opcode classes, from the ISA table:
+
+| Class       | Purpose                                                         |
+| ----------- | --------------------------------------------------------------- |
+| Stack       | `LDC` `LDI` `DUP` `DUPN` `DROP` `SWAP` `ROT` and local slots.    |
+| Data        | `PACK` `UNPACK` `IDX` `LEN` `CAT` `FMT`; heap-allocating.        |
+| Arithmetic  | Wrapping i64 only. No floats, which are not portable-determin.   |
+| Control     | `BR` `BRZ` `BRNZ` `CALL` `RET` `TAIL` `SWITCH`; function-local.  |
+| Effects     | `CALLTOOL` `AWAIT` `POLL` `CANCEL`; the only suspending ops.     |
+| Durability  | `CHECKPOINT` `YIELD_CTX` `RESUME`; snapshot boundaries.          |
+| Metering    | `RESERVE` `RELEASE` `SPEND`; two-phase budgeting.                |
+| Context     | `CTXPUSH` `CTXPOP` and friends; conversation context as a ring.  |
+
+Floats, indirect branches, and host pointers are deliberately absent: each
+would break serializability or the verifier's static control-flow graph.
+
+## The verifier
+
+`src/verify.rs` is a JVM-style verifier: abstract interpretation over the
+control-flow graph (`src/cfg.rs`), iterated to a fixpoint, with merge points
+unifying the abstract frames. The type lattice is
+`Bottom ⊑ {Int, Str, Bytes, List, Handle, Pending} ⊑ Top`, with `Top` illegal
+at any use site (`isa::Ty`). It runs at load and proves, among other properties:
+
+- stack depth at every instruction is single-valued and within `maxstack`;
+- every operand has a type the instruction accepts;
+- no `Pending` value is live at a return or a snapshot boundary, so no snapshot
+  can capture a half-issued effect nobody is awaiting;
+- branch targets land on real instructions in the same function;
+- every cycle in the CFG contains a metering instruction, so a runaway loop
+  burns budget rather than wall-clock.
+
+Diagnostics carry source spans from the assembler (`src/diag.rs`), so a verify
+failure on hand-written `.cdx` reads like a compiler error with a code such as
+`E_PENDING_ESCAPE`, which `cinder explain` can describe.
+
+## Continuations and replay
+
+A snapshot is the machine flattened to a byte string: a header binding it to an
+image hash, the call frames, the operand slots, the heap arena, the context
+ring, and the budget ledger, sealed with a content hash (`src/cont.rs`).
+`cont::restore` validates the hash, the image binding, and every handle's extent
+before it reconstructs, so a snapshot from a different image fails with an image
+mismatch rather than a wild jump.
+
+The journal (`src/journal.rs`) is append-only and hash-chained: each record
+commits to the previous record's hash, so a truncated or edited journal is
+detectable. `replay::Host` (`src/replay.rs`) serves the interpreter from that
+journal instead of from a live host; if the interpreter asks for something the
+journal does not have next, that is a divergence error naming the record.
+
+<div align="center">
+<img src="docs/assets/replay.svg" alt="Replay: the same interpreter reads answers from a hash-chained journal instead of a live host, and a mismatch raises a divergence error at the offending record" width="860">
+</div>
+
+## Building from source
+
+Requires Rust (pinned in `rust-toolchain.toml`). The `Makefile` is the source of
+truth for what CI runs; `.github/workflows/ci.yml` calls the same targets.
+
+```sh
+cargo build --release            # library + cinderc, cinder, cinder-fuzz
+cargo test                       # unit tests, including the invariant tests
+cargo clippy --all-targets       # lints configured in Cargo.toml
+cargo run --bin cinderc -- --emit-isa-md   # regenerate the ISA reference
+```
+
+The release profile uses fat LTO, a single codegen unit, `panic = "abort"`, and
+stripped symbols (`Cargo.toml`). The `fuzz` profile turns on debug assertions
+and overflow checks so the fuzzer catches arithmetic and arena mistakes.
+
+## Repository layout
+
+The Rust core is intentionally flat; module boundaries follow the machine's
+structure.
+
+```
+cindervm/
+├── src/
+│   ├── lib.rs        crate root, the three invariants, #![deny(unsafe_code)]
+│   ├── isa.rs        opcode table, encoding, stack effects, type rules
+│   ├── value.rs      tagged 16-byte Value, arena handles, coercions
+│   ├── lex.rs        .cdx tokenizer with span tracking
+│   ├── asm.rs        parser, symbol resolution, fixups, encoder
+│   ├── image.rs      .cdxb container: sections, header, sealing
+│   ├── cfg.rs        basic blocks, dominators, loop headers
+│   ├── verify.rs     abstract interpreter, type lattice, CFG fixpoint
+│   ├── interp.rs     the dispatch loop and instruction semantics
+│   ├── frame.rs      call frames and operand stack windows
+│   ├── heap.rs       bump arena, handle validation
+│   ├── cont.rs       snapshot / restore, relocation, validation
+│   ├── journal.rs    hash-chained record log and cursor
+│   ├── replay.rs     journal-backed host, divergence detection
+│   ├── budget.rs     two-phase reservation ledger
+│   ├── ctx.rs        context ring, windowing, token accounting
+│   ├── trap.rs       the interpreter/host boundary type
+│   ├── wire.rs       frame protocol codec (behind the `wire` feature)
+│   ├── diag.rs       spans, stable error codes, rendered diagnostics
+│   ├── disas.rs      disassembler and `cinderc dis` output
+│   ├── hash.rs       in-crate content hashing
+│   └── bin/
+│       ├── cinderc.rs     assembler / runner CLI
+│       ├── cinder.rs      version / explain / run
+│       └── cinder_fuzz.rs mutation fuzzer
+└── docs/
+    ├── internal-contract.md   frozen inter-module interface
+    └── assets/                the three SVG identity assets
+```
+
+## Stability
+
+`0.x`: the library API is not stable. The `.cdxb` container carries a format
+version and the ISA is versioned separately (`cdx/4`, `ISA_VERSION = 4`); adding
+opcodes bumps the ISA minor, changing the meaning of one bumps the ISA version.
+`CHANGELOG.md` tracks changes.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
