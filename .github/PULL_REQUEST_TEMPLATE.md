@@ -4,5 +4,3 @@
 
 ## Checklist
 
-- [ ] cargo fmt --check clean
-- [ ] cargo test green
