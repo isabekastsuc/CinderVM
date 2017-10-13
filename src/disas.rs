@@ -43,3 +43,25 @@ fn render(image: &Image, d: &isa::Decoded) -> String {
         Operand::Const => format!(
             " [{}]",
             image
+                .constants()
+                .get(d.b as usize)
+                .map(|c| String::from_utf8_lossy(c).into_owned())
+                .unwrap_or_default()
+        ),
+        Operand::Imm => format!(" {}", isa::imm(*d)),
+        Operand::Target => format!(" {}", d.b),
+        Operand::Func => {
+            let name = image
+                .funcs()
+                .get(d.b as usize)
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
+            format!(" {name}")
+        }
+        Operand::Tool => {
+            let name = image.tools().get(d.b as usize).cloned().unwrap_or_default();
+            format!(" {name}")
+        }
+        Operand::JumpTable => format!(" table:{}", d.b),
+        Operand::Slot => format!(" slot:{}", d.b),
+        Operand::Dimension => format!(" dim:{}", d.b),
