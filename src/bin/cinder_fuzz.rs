@@ -52,3 +52,30 @@ fn main() -> ExitCode {
     let mut crashed = 0u64;
     for _ in 0..ITERATIONS {
         let mut code = Vec::new();
+        let n = (next_u64(&mut state) % 24 + 1) as usize;
+        for _ in 0..n {
+            random_insn(&mut state, &mut code);
+        }
+        let src = format!(
+            ".fn main() -> i32\n.maxstack 8\nmain:\n    ldi 0\n{}\n    halt\n",
+            code.chunks_exact(4)
+                .map(|c| isa::decode(c, 0)
+                    .map(|d| d.op.mnemonic().to_string())
+                    .unwrap_or_else(|| "nop".into()))
+                .map(|m| format!("    {m}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        match verify::admit(asm::assemble("fuzz.cdx", &src).unwrap_or_default()) {
+            Err(_) => {
+                rejected += 1;
+            }
+            Ok(image) => {
+                accepted += 1;
+                let mut vm = interp::Vm::new(
+                    &image,
+                    interp::Limits {
+                        max_steps: 1_000,
+                        max_frames: 16,
+                        max_arena: 1 << 20,
+                    },

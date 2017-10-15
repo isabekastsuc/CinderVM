@@ -46,3 +46,51 @@ pub fn encode(m: &Message) -> Vec<u8> {
     }
     let mut out = Vec::with_capacity(body.len() + 4);
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
+/// Decode one frame; returns `None` when the buffer holds an incomplete
+/// message.
+pub fn decode(buf: &[u8]) -> Result<Option<(Message, usize)>> {
+    if buf.len() < 4 {
+        return Ok(None);
+    }
+    let len = u32::from_le_bytes(buf[..4].try_into().expect("4 bytes")) as usize;
+    if buf.len() < 4 + len {
+        return Ok(None);
+    }
+    let body = &buf[4..4 + len];
+    if body.first() != Some(&WIRE_VERSION) {
+        return Err(Diag::new(Code::RecordMalformed, "wire version mismatch"));
+    }
+    let kind = body[1];
+    let msg = match kind {
+        0 => {
+            let n = u32::from_le_bytes(body[2..6].try_into().expect("4 bytes")) as usize;
+            let name = String::from_utf8(body[6..6 + n].to_vec())
+                .map_err(|_| Diag::new(Code::RecordMalformed, "hello name not UTF-8"))?;
+            Message::Hello(name)
+        }
+        1 => {
+            let seq = u64::from_le_bytes(body[2..10].try_into().expect("8 bytes"));
+            Message::Trap(seq, body[10])
+        }
+        2 => {
+            let seq = u64::from_le_bytes(body[2..10].try_into().expect("8 bytes"));
+            let n = u32::from_le_bytes(body[10..14].try_into().expect("4 bytes")) as usize;
+            Message::Answer(seq, body[14..14 + n].to_vec())
+        }
+        3 => Message::Snapshot,
+        4 => Message::Shutdown,
+        _ => {
+            return Err(Diag::new(
+                Code::RecordMalformed,
+                format!("unknown wire kind {kind}"),
+            ))
+        }
+    };
+    Ok(Some((msg, 4 + len)))
+}
+
+#[cfg(test)]
