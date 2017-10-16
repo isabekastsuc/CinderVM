@@ -1,0 +1,183 @@
+//! The `.cdxb` container: an assembled, sealed, verifiable image.
+//!
+//! [`Image`] is the whole program: constant pool, function table, tool
+//! names, machine code, and jump tables. It has no public constructor -
+//! [`crate::verify::admit`] is the only way to obtain a sealed one, which is
+//! what lets the rest of the crate assume the invariants proven there.
+//! Serialization is a flat little-endian layout with an FNV-1a digest over
+//! everything that precedes it, so [`Image::from_bytes`] rejects corruption
+//! before the VM ever sees a byte of code.
+
+use crate::diag::{Code, Diag, Result};
+use crate::hash;
+
+/// Magic bytes every `.cdxb` container starts with.
+pub const CDXB_MAGIC: [u8; 4] = *b"CDXB";
+
+/// Container format version written by [`Image::to_bytes`].
+pub const CDXB_VERSION: u8 = 1;
+
+/// Assemble an image from already-verified parts. Callers must be
+/// `crate::verify::admit` - everything else goes through it.
+pub fn build(
+    name: String,
+    constants: Vec<Vec<u8>>,
+    funcs: Vec<FuncMeta>,
+    tools: Vec<String>,
+    code: Vec<u8>,
+    jump_tables: Vec<Vec<u32>>,
+) -> Image {
+    Image {
+        name,
+        constants,
+        funcs,
+        tools,
+        code,
+        jump_tables,
+        verified: false,
+    }
+}
+
+/// Flip the seal once the verifier has proven its invariants.
+pub fn mark_verified(image: &mut Image) {
+    image.verified = true;
+}
+
+/// Static description of one function: where its code lives and its
+/// stack contract. Produced by the assembler, consumed by the verifier,
+/// the CFG builder, and the interpreter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FuncMeta {
+    /// Symbol name (`main` is the entry point).
+    pub name: String,
+    /// Offset of the first instruction inside [`Image::code`].
+    pub code_off: u32,
+    /// Length of the function body in bytes (multiple of `INSN_LEN`).
+    pub code_len: u32,
+    /// Maximum operand-stack depth the verifier proved for this function.
+    pub maxstack: u16,
+    /// Number of arguments the function pops on call.
+    pub args: u8,
+    /// Number of values the function leaves behind on return (0 or 1).
+    pub returns: u8,
+}
+
+/// A sealed, verified program image.
+#[derive(Clone, Debug)]
+pub struct Image {
+    name: String,
+    constants: Vec<Vec<u8>>,
+    funcs: Vec<FuncMeta>,
+    tools: Vec<String>,
+    code: Vec<u8>,
+    jump_tables: Vec<Vec<u32>>,
+    verified: bool,
+}
+
+impl Image {
+    /// Image name as given at assembly time (the `.cdx` stem).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The constant pool (raw little-endian bytes per constant).
+    pub fn constants(&self) -> &[Vec<u8>] {
+        &self.constants
+    }
+
+    /// The function table, in call-index order.
+    pub fn funcs(&self) -> &[FuncMeta] {
+        &self.funcs
+    }
+
+    /// External tool names addressable by the `TOOL` instruction.
+    pub fn tools(&self) -> &[String] {
+        &self.tools
+    }
+
+    /// The flat code section all functions share.
+    pub fn code(&self) -> &[u8] {
+        &self.code
+    }
+
+    /// Jump tables, indexed by the `SWITCH` operand.
+    pub fn jump_tables(&self) -> &[Vec<u32>] {
+        &self.jump_tables
+    }
+
+    /// Whether the verifier sealed this image.
+    pub fn is_verified(&self) -> bool {
+        self.verified
+    }
+
+    /// FNV-1a over every serialized byte except the digest itself.
+    pub fn checksum(&self) -> u64 {
+        hash::hash_bytes(&self.to_bytes()[..].to_vec())
+    }
+
+    /// Serialize to the `.cdxb` container layout.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&CDXB_MAGIC);
+        out.push(CDXB_VERSION);
+        put_str(&mut out, &self.name);
+
+        put_u32(&mut out, self.constants.len() as u32);
+        for c in &self.constants {
+            put_bytes(&mut out, c);
+        }
+
+        put_u32(&mut out, self.funcs.len() as u32);
+        for f in &self.funcs {
+            put_str(&mut out, &f.name);
+            put_u32(&mut out, f.code_off);
+            put_u32(&mut out, f.code_len);
+            put_u16(&mut out, f.maxstack);
+            out.push(f.args);
+            out.push(f.returns);
+        }
+
+        put_u32(&mut out, self.tools.len() as u32);
+        for t in &self.tools {
+            put_str(&mut out, t);
+        }
+
+        put_bytes(&mut out, &self.code);
+
+        put_u32(&mut out, self.jump_tables.len() as u32);
+        for t in &self.jump_tables {
+            put_u32(&mut out, t.len() as u32);
+            for &v in t {
+                put_u32(&mut out, v);
+            }
+        }
+
+        out.push(u8::from(self.verified));
+        let digest = hash::hash_bytes(&out);
+        out.extend_from_slice(&digest.to_le_bytes());
+        out
+    }
+
+    /// Bytes that participate in the digest (everything but the trailing 8).
+    pub fn payload_bytes(&self) -> Vec<u8> {
+        let full = self.to_bytes();
+        full[..full.len() - 8].to_vec()
+    }
+
+    /// Parse and check a `.cdxb` container: magic, version, section bounds,
+    /// and digest. A container that survives this is structurally sound;
+    /// semantic invariants are [`crate::verify`]'s job.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Image> {
+        if bytes.len() < 5 {
+            return Err(Diag::new(Code::BadMagic, "container too short"));
+        }
+        if bytes[0..4] != CDXB_MAGIC {
+            return Err(Diag::new(Code::BadMagic, "not a .cdxb container"));
+        }
+        if bytes[4] != CDXB_VERSION {
+            return Err(Diag::new(
+                Code::BadMagic,
+                format!("unsupported container version {}", bytes[4]),
+            ));
+        }
+        let body = &bytes[..bytes.len() - 8];
