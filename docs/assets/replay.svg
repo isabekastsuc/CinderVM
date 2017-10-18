@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 300" width="860" height="300" role="img"
+     aria-label="Diagram: time-travel replay restores the nearest checkpoint and steps forward through journal records">
+  <defs>
+    <style>
+      .m { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; font-size: 12px; fill: #e6edf3; }
+      .t { font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace; font-size: 11px; fill: #8b949e; }
+      .h { font-family: -apple-system, "Segoe UI", sans-serif; font-size: 13px; fill: #e6edf3; font-weight: 600; }
+    </style>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8b949e"/>
+    </marker>
+    <marker id="arv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#bc8cff"/>
+    </marker>
+  </defs>
+
+  <rect width="860" height="300" rx="10" fill="#0d1117"/>
+  <rect x="0.5" y="0.5" width="859" height="299" rx="10" fill="none" stroke="#30363d"/>
+
+  <text class="h" x="24" y="30">journal: append-only, hash-chained</text>
+
+  <!-- journal spine -->
+  <line x1="40" y1="96" x2="800" y2="96" stroke="#30363d" stroke-width="2"/>
+
+  <!-- records -->
+  <g>
+    <!-- r0 -->
+    <rect x="40" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text class="t" x="83" y="100" text-anchor="middle">tool.issue</text>
+    <text class="t" x="83" y="130" text-anchor="middle">0000</text>
+    <!-- r1 -->
+    <rect x="146" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text class="t" x="189" y="100" text-anchor="middle">tool.answer</text>
+    <text class="t" x="189" y="130" text-anchor="middle">0001</text>
+    <!-- r2: checkpoint -->
+    <rect x="252" y="80" width="86" height="32" rx="4" fill="#2a1e3d" stroke="#bc8cff" stroke-width="1.5"/>
+    <text class="m" x="295" y="100" text-anchor="middle" fill="#bc8cff">checkpoint</text>
+    <text class="t" x="295" y="130" text-anchor="middle">0002</text>
+    <!-- r3 -->
+    <rect x="358" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text class="t" x="401" y="100" text-anchor="middle">tool.issue</text>
+    <text class="t" x="401" y="130" text-anchor="middle">0003</text>
+    <!-- r4 -->
