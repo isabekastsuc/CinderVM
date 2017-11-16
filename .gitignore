@@ -10,3 +10,15 @@ corpus/*.cdxb
 *.cdxc
 *.jl
 
+# Go build artifacts (supervisor)
+/cmd/cinderd/cinderd
+/cinderd
+
+# Editor and OS junk
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
