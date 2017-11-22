@@ -50,3 +50,29 @@ impl Arena {
     /// Decode a list handle into its elements.
     pub fn get_list(&self, h: Handle) -> Result<Vec<Value>> {
         let raw = self.get(h)?;
+        if raw.len() % crate::value::SLOT_LEN != 0 {
+            return Err(Diag::new(
+                Code::BadHandle,
+                "list payload is not slot-aligned",
+            ));
+        }
+        raw.chunks_exact(crate::value::SLOT_LEN)
+            .map(Value::read)
+            .collect()
+    }
+
+    /// Read a handle as UTF-8.
+    pub fn get_str(&self, h: Handle) -> Result<&str> {
+        let raw = self.get(h)?;
+        std::str::from_utf8(raw)
+            .map_err(|_| Diag::new(Code::BadHandle, "str payload is not valid UTF-8"))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Snapshot the arena bytes for `cont::snapshot`.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
