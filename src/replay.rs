@@ -66,3 +66,71 @@ impl Recorder {
     }
 
     pub fn record(&mut self, trap: &Trap, answer: &Answer) -> Result<()> {
+        let payload = match (trap, answer) {
+            (Trap::Oracle(_), Answer::Value(v)) => {
+                let mut buf = Vec::with_capacity(16);
+                v.write(&mut buf);
+                buf
+            }
+            (Trap::Effect { .. }, Answer::Value(v)) => {
+                let mut buf = Vec::new();
+                v.write(&mut buf);
+                buf
+            }
+            _ => vec![0u8; 16],
+        };
+        let kind = if matches!(trap, Trap::Oracle(_)) {
+            KIND_ORACLE
+        } else {
+            KIND_EFFECT
+        };
+        self.journal.append(kind, &payload)?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn journal(&self) -> &Journal {
+        &self.journal
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::isa::Op;
+    use crate::value::EffectId;
+
+    #[test]
+    fn recorder_then_host_replays_exact_values() {
+        let mut rec = Recorder::new();
+        let trap = Trap::Oracle(Op::Rand);
+        rec.record(&trap, &Answer::Value(Value::int(42))).unwrap();
+        let trap2 = Trap::Effect {
+            id: EffectId(1),
+            tool: 0,
+            args: Vec::new(),
+        };
+        rec.record(&trap2, &Answer::Value(Value::int(7))).unwrap();
+        let mut host = Host::from_journal(rec.journal().clone());
+        let a1 = host.answer(&Trap::Oracle(Op::Rand)).unwrap();
+        assert_eq!(a1.into_value().as_int().unwrap(), 42);
+        let a2 = host
+            .answer(&Trap::Effect {
+                id: EffectId(1),
+                tool: 0,
+                args: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(a2.into_value().as_int().unwrap(), 7);
+        assert_eq!(host.remaining(), 0);
+    }
+}
+
+impl Answer {
+    fn into_value(self) -> Value {
+        match self {
+            Answer::Value(v) | Answer::Fail(v) => v,
+            Answer::Shutdown => Value::int(1),
+        }
+    }
+}

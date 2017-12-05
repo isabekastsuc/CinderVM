@@ -149,3 +149,305 @@ impl Vm {
                 Op::Rot => {
                     let a = frame.pop()?;
                     let b = frame.pop()?;
+                    let c = frame.pop()?;
+                    frame.push(a)?;
+                    frame.push(c)?;
+                    frame.push(b)?;
+                }
+                Op::Ldl => {
+                    let v = frame.load_local(d.b as usize)?;
+                    frame.push(v)?;
+                }
+                Op::Stl => {
+                    let v = frame.pop()?;
+                    frame.store_local(d.b as usize, v)?;
+                }
+                Op::Argv => {
+                    let h = self.arena.alloc(&[0u8])?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Pack => {
+                    let items = frame.pop_n(d.b as usize)?;
+                    let h = self.arena.alloc_list(&items)?;
+                    frame.push(Value::list(h))?;
+                }
+                Op::Unpack => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    for v in self.arena.get_list(h)? {
+                        frame.push(v)?;
+                    }
+                }
+                Op::Idx => {
+                    let list = frame.pop()?;
+                    let idx = frame.pop()?.as_int()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let items = self.arena.get_list(h)?;
+                    if idx < 0 || idx as usize >= items.len() {
+                        return Err(Diag::new(Code::IndexRange, "index out of range"));
+                    }
+                    frame.push(items[idx as usize])?;
+                }
+                Op::Len => {
+                    let v = frame.pop()?;
+                    let h = v.as_handle()?;
+                    let len = self.arena.get(h)?.len() as i64;
+                    frame.push(Value::int(len))?;
+                }
+                Op::Cat => {
+                    let b = frame.pop()?;
+                    let a = frame.pop()?;
+                    let ha = a.as_handle_of(Tag::Str)?;
+                    let hb = b.as_handle_of(Tag::Str)?;
+                    let mut buf = self.arena.get(ha)?.to_vec();
+                    buf.extend_from_slice(self.arena.get(hb)?);
+                    let h = self.arena.alloc(&buf)?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Fmt => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let items = self.arena.get_list(h)?;
+                    let template = String::from_utf8_lossy(
+                        self.image
+                            .constants()
+                            .get(d.b as usize)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    );
+                    let mut out = String::new();
+                    let mut next = 0usize;
+                    let mut last = false;
+                    for part in template.split("{}") {
+                        out.push_str(part);
+                        if next < items.len() && !last {
+                            out.push_str(&format_short(items[next], &self.arena));
+                            next += 1;
+                        }
+                        last = next >= items.len();
+                    }
+                    let h = self.arena.alloc(out.as_bytes())?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Slice => {
+                    let v = frame.pop()?;
+                    let hi = frame.pop()?.as_int()?;
+                    let lo = frame.pop()?.as_int()?;
+                    let h = v.as_handle()?;
+                    let raw = self.arena.get(h)?.to_vec();
+                    let lo = lo.clamp(0, raw.len() as i64) as usize;
+                    let hi = hi.clamp(0, raw.len() as i64) as usize;
+                    let h = self.arena.alloc(&raw[lo.min(hi)..hi.max(lo)])?;
+                    frame.push(Value::bytes(h))?;
+                }
+                Op::Find => {
+                    let needle = frame.pop()?;
+                    let hay = frame.pop()?;
+                    let hay = self.arena.get(hay.as_handle()?)?.to_vec();
+                    let needle = self.arena.get(needle.as_handle()?)?.to_vec();
+                    let pos = hay.windows(needle.len()).position(|w| w == needle);
+                    frame.push(Value::int(pos.map_or(-1, |p| p as i64)))?;
+                }
+                Op::Add => binop(&mut self.frames[fi], |a, b| a.wrapping_add(b))?,
+                Op::Sub => binop(&mut self.frames[fi], |a, b| a.wrapping_sub(b))?,
+                Op::Mul => binop(&mut self.frames[fi], |a, b| a.wrapping_mul(b))?,
+                Op::Div => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    if b == 0 {
+                        return Err(Diag::new(Code::DivideByZero, "divide by zero"));
+                    }
+                    frame.push(Value::int(a.wrapping_div(b)))?;
+                }
+                Op::Mod => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    if b == 0 {
+                        return Err(Diag::new(Code::DivideByZero, "divide by zero"));
+                    }
+                    frame.push(Value::int(a.wrapping_rem(b)))?;
+                }
+                Op::Eq => {
+                    let b = frame.pop()?;
+                    let a = frame.pop()?;
+                    let eq = if a.ty() == b.ty() && a.ty() != Ty::Int {
+                        let ha = a.as_handle()?;
+                        let hb = b.as_handle()?;
+                        self.arena.get(ha)? == self.arena.get(hb)?
+                    } else {
+                        a.shallow_eq(b)
+                    };
+                    frame.push(Value::bool(eq))?;
+                }
+                Op::Lt => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::bool(a < b))?;
+                }
+                Op::Not => {
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::bool(a == 0))?;
+                }
+                Op::And => binop(&mut self.frames[fi], |a, b| a & b)?,
+                Op::Or => binop(&mut self.frames[fi], |a, b| a | b)?,
+                Op::Shl => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::int(a.wrapping_shl((b & 63) as u32)))?;
+                }
+                Op::Shr => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::int(a.wrapping_shr((b & 63) as u32)))?;
+                }
+                Op::Br => {
+                    self.frames[fi].pc = d.b;
+                    advance = false;
+                }
+                Op::Brz | Op::Brnz => {
+                    let v = frame.pop()?.is_truthy();
+                    let take = if op == Op::Brz { !v } else { v };
+                    if take {
+                        self.frames[fi].pc = d.b;
+                        advance = false;
+                    }
+                }
+                Op::Call => {
+                    let target =
+                        self.image
+                            .funcs()
+                            .get(d.b as usize)
+                            .cloned()
+                            .ok_or_else(|| {
+                                Diag::new(Code::DanglingIndex, "call target out of range")
+                            })?;
+                    let args = frame.pop_n(target.args as usize)?;
+                    if self.frames.len() >= self.limits.max_frames {
+                        return Err(Diag::new(Code::BudgetExceeded, "frame limit exceeded"));
+                    }
+                    self.frames
+                        .push(Frame::new(d.b, args, 0, target.maxstack, target.returns));
+                    advance = false;
+                }
+                Op::Ret => {
+                    let returns = frame.returns;
+                    let values = frame.pop_n(returns as usize)?;
+                    self.frames.pop();
+                    if self.frames.is_empty() {
+                        self.halt =
+                            Some(values.first().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0));
+                    } else {
+                        let caller = self.frames.len() - 1;
+                        for v in values {
+                            self.frames[caller].push(v)?;
+                        }
+                    }
+                    advance = false;
+                }
+                Op::Tail => {
+                    let target =
+                        self.image
+                            .funcs()
+                            .get(d.b as usize)
+                            .cloned()
+                            .ok_or_else(|| {
+                                Diag::new(Code::DanglingIndex, "tail target out of range")
+                            })?;
+                    let args = frame.pop_n(target.args as usize)?;
+                    self.frames[fi] = Frame::new(d.b, args, 0, target.maxstack, target.returns);
+                    advance = false;
+                }
+                Op::Switch => {
+                    let v = frame.pop()?.as_int()?;
+                    let table = self
+                        .image
+                        .jump_tables()
+                        .get(d.b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let target = if v >= 0 && (v as usize) < table.len().saturating_sub(1) {
+                        table[v as usize]
+                    } else {
+                        table.last().copied().unwrap_or(0)
+                    };
+                    self.frames[fi].pc = target;
+                    advance = false;
+                }
+                Op::Trap => {
+                    let msg = self
+                        .image
+                        .constants()
+                        .get(d.b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    return Err(Diag::new(
+                        Code::Trapped,
+                        String::from_utf8_lossy(&msg).into_owned(),
+                    ));
+                }
+                Op::Halt => {
+                    let code = frame.pop().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                    self.frames.clear();
+                    self.halt = Some(code);
+                    advance = false;
+                }
+                Op::CallTool | Op::Spawn => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let args = self.arena.get_list(h)?;
+                    let id = EffectId(self.next_effect);
+                    self.next_effect += 1;
+                    self.pending = Some(Trap::Effect {
+                        id,
+                        tool: d.b,
+                        args,
+                    });
+                    frame.push(Value::pending(id))?;
+                    advance = false;
+                }
+                Op::Await | Op::Poll | Op::Join | Op::Select | Op::Cancel => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::Fork => {
+                    if self.fork_depth > 0 {
+                        return Err(Diag::new(Code::ForkImbalance, "nested forks unsupported"));
+                    }
+                    self.fork_depth = 1;
+                    self.staged_arena = Some(self.arena.clone());
+                    frame.push(Value::int(0))?;
+                }
+                Op::Commit => {
+                    if let Some(staged) = self.staged_arena.take() {
+                        self.arena = staged;
+                    }
+                    self.fork_depth = 0;
+                }
+                Op::Abort => {
+                    self.staged_arena = None;
+                    self.fork_depth = 0;
+                }
+                Op::Checkpoint => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::YieldCtx => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::Resume => {}
+                Op::Reserve => {
+                    self.budget.reserve(d.a, d.b as i64)?;
+                }
+                Op::Release => {
+                    let amount = frame.pop()?.as_int()?;
+                    self.budget.release(d.a, amount)?;
+                }
+                Op::Spend => {
+                    let amount = frame.pop()?.as_int()?;
+                    self.budget.spend(d.a, amount)?;
+                }
+                Op::QueryQ => {
+                    let remaining = self.budget.remaining(d.a);
+                    frame.push(Value::int(remaining))?;
+                    self.pending = Some(Trap::Oracle(Op::QueryQ));
