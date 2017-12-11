@@ -19,25 +19,3 @@
 
   <text class="h" x="24" y="30">journal: append-only, hash-chained</text>
 
-  <!-- journal spine -->
-  <line x1="40" y1="96" x2="800" y2="96" stroke="#30363d" stroke-width="2"/>
-
-  <!-- records -->
-  <g>
-    <!-- r0 -->
-    <rect x="40" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
-    <text class="t" x="83" y="100" text-anchor="middle">tool.issue</text>
-    <text class="t" x="83" y="130" text-anchor="middle">0000</text>
-    <!-- r1 -->
-    <rect x="146" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
-    <text class="t" x="189" y="100" text-anchor="middle">tool.answer</text>
-    <text class="t" x="189" y="130" text-anchor="middle">0001</text>
-    <!-- r2: checkpoint -->
-    <rect x="252" y="80" width="86" height="32" rx="4" fill="#2a1e3d" stroke="#bc8cff" stroke-width="1.5"/>
-    <text class="m" x="295" y="100" text-anchor="middle" fill="#bc8cff">checkpoint</text>
-    <text class="t" x="295" y="130" text-anchor="middle">0002</text>
-    <!-- r3 -->
-    <rect x="358" y="80" width="86" height="32" rx="4" fill="#161b22" stroke="#30363d"/>
-    <text class="t" x="401" y="100" text-anchor="middle">tool.issue</text>
-    <text class="t" x="401" y="130" text-anchor="middle">0003</text>
-    <!-- r4 -->
