@@ -41,25 +41,3 @@ impl ContextRing {
         if n > self.segments.len() {
             return Err(Diag::new(Code::IndexRange, "eviction exceeds ring size"));
         }
-        for _ in 0..n {
-            self.segments.pop_front();
-        }
-        Ok(())
-    }
-
-    /// Materialize the current window as a list of segment values.
-    #[must_use]
-    pub fn window(&self) -> Vec<Value> {
-        self.segments
-            .iter()
-            .map(|s| Value::int(s[0] as i64))
-            .collect()
-    }
-
-    /// Approximate token cost: bytes in the window.
-    #[must_use]
-    pub fn cost(&self) -> i64 {
-        self.segments.iter().map(|s| s.len() as i64).sum()
-    }
-
-    #[must_use]

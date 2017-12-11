@@ -129,3 +129,135 @@ impl Cfg {
 
         let mut owner = vec![0u32; insns.len()];
         let mut blocks = Vec::with_capacity(starts.len());
+        for (id, &start) in starts.iter().enumerate() {
+            let end = starts.get(id + 1).copied().unwrap_or(n);
+            for slot in &mut owner[start as usize..end as usize] {
+                *slot = id as u32;
+            }
+            blocks.push(Block {
+                start,
+                end,
+                succs: Vec::new(),
+                preds: Vec::new(),
+            });
+        }
+
+        // Pass 2: lift the terminator's instruction-level successors to blocks.
+        // Every successor is a leader by construction, so `owner` maps it to a
+        // block whose `start` it equals.
+        for id in 0..blocks.len() {
+            let last = blocks[id].end - 1;
+            let mut succs = Vec::new();
+            for s in raw_succs(&insns, last, jump_tables)? {
+                let b = owner[s as usize];
+                if !succs.contains(&b) {
+                    succs.push(b);
+                }
+            }
+            blocks[id].succs = succs;
+        }
+        for id in 0..blocks.len() {
+            for k in 0..blocks[id].succs.len() {
+                let s = blocks[id].succs[k] as usize;
+                let me = id as u32;
+                if !blocks[s].preds.contains(&me) {
+                    blocks[s].preds.push(me);
+                }
+            }
+        }
+
+        let rpo = reverse_postorder(&blocks);
+        let mut rpo_num = vec![UNDEF; blocks.len()];
+        for (pos, &b) in rpo.iter().enumerate() {
+            rpo_num[b as usize] = pos as u32;
+        }
+        let idoms = dominators(&blocks, &rpo, &rpo_num);
+
+        let mut cfg = Self {
+            insns,
+            offsets,
+            blocks,
+            owner,
+            rpo,
+            rpo_num,
+            idoms,
+            back_edges: Vec::new(),
+        };
+        cfg.back_edges = cfg.find_back_edges();
+        Ok(cfg)
+    }
+
+    /// All basic blocks, ordered by `start`. Block 0 is the entry.
+    #[must_use]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    /// Block containing instruction `insn`, or `None` if out of range.
+    #[must_use]
+    pub fn block_of(&self, insn: u32) -> Option<u32> {
+        self.owner.get(insn as usize).copied()
+    }
+
+    /// Reverse postorder over blocks *reachable from the entry*. Unreachable
+    /// blocks are absent, which is what makes it a valid dominator iteration
+    /// order — see [`Cfg::unreachable`] for the rest.
+    #[must_use]
+    pub fn rpo(&self) -> &[u32] {
+        &self.rpo
+    }
+
+    /// Immediate dominator of `b`. `None` for the entry block, for an
+    /// unreachable block, and for an out-of-range id.
+    #[must_use]
+    pub fn idom(&self, b: u32) -> Option<u32> {
+        match self.idoms.get(b as usize).copied() {
+            Some(d) if d != UNDEF && d != b => Some(d),
+            _ => None,
+        }
+    }
+
+    /// Whether `a` dominates `b`: whether every path from the entry to `b`
+    /// passes through `a`. Walks `b`'s idom chain, which is O(depth).
+    #[must_use]
+    pub fn dominates(&self, a: u32, b: u32) -> bool {
+        if a as usize >= self.blocks.len() || b as usize >= self.blocks.len() {
+            return false;
+        }
+        if self.rpo_num[a as usize] == UNDEF || self.rpo_num[b as usize] == UNDEF {
+            return false; // domination is meaningless off the reachable subgraph
+        }
+        let mut cur = b;
+        loop {
+            if cur == a {
+                return true;
+            }
+            match self.idom(cur) {
+                Some(next) => cur = next,
+                None => return false,
+            }
+        }
+    }
+
+    /// Back edges as `(tail, header)`, where the header *dominates* the tail.
+    ///
+    /// Dominance is the whole point. "Successor index is below source index" is
+    /// the cheap approximation, and it is wrong in both directions: it flags the
+    /// re-entry edge of an irreducible graph, where the target is merely earlier
+    /// and not a loop header, and it misses nothing only by accident of layout.
+    /// `verify.rs` turns each pair here into the claim "this cycle must contain
+    /// a metering instruction dominated by the header" (`E_UNMETERED_LOOP`), so
+    /// a false positive rejects a valid image and a false negative admits an
+    /// unmeterable loop. Only dominance identifies a real natural loop.
+    #[must_use]
+    pub fn back_edges(&self) -> &[(u32, u32)] {
+        &self.back_edges
+    }
+
+    /// The cached decoded instruction at `idx`.
+    ///
+    /// Panics if `idx >= insn_count()`. That is deliberate: `build` decoded the
+    /// entire range and every public index-producing method is bounded by it, so
+    /// an out-of-range index is a bug in the caller, not bad input, and a
+    /// `Result` here would only push the `unwrap` outwards.
+    #[must_use]

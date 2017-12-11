@@ -76,3 +76,29 @@ impl Arena {
     /// Snapshot the arena bytes for `cont::snapshot`.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Rebuild from a snapshot.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            data: bytes.to_vec(),
+        }
+    }
+}
+
+/// Which arena payload class a tag requires. Used by the verifier's `Handle`
+/// widening rule: `Handle` satisfies `Str`/`Bytes`/`List`, but the interpreter
+/// still checks the concrete tag at deref time.
+#[must_use]
+pub const fn classify(tag: Tag) -> Ty {
+    match tag {
+        Tag::Str | Tag::Bytes | Tag::List => Ty::Handle,
+        Tag::Int => Ty::Int,
+        Tag::Pending => Ty::Pending,
+        Tag::Void => Ty::Bottom,
+    }
+}
+
+#[cfg(test)]
+mod tests {
