@@ -219,3 +219,224 @@ exact codes in `diag.rs`.
 ### `heap.rs`
 ```rust
 pub struct Arena;
+impl Arena {
+    pub fn new(quota: u32) -> Self;
+    pub fn alloc(&mut self, tag: Tag, bytes: &[u8]) -> Result<Handle>;
+    pub fn alloc_list(&mut self, vals: &[Value]) -> Result<Handle>;
+    pub fn bytes(&self, h: Handle) -> Result<&[u8]>;
+    pub fn str(&self, h: Handle) -> Result<&str>;
+    pub fn list(&self, h: Handle) -> Result<Vec<Value>>;
+    pub fn len(&self) -> u32;
+    pub fn used(&self) -> u32;
+    pub fn quota(&self) -> u32;
+    pub fn raw(&self) -> &[u8];                       // for snapshot
+    pub fn from_raw(bytes: Vec<u8>, quota: u32) -> Self;
+    pub fn fork(&mut self) -> ForkToken;              // COW
+    pub fn commit(&mut self, t: ForkToken) -> Result<()>;
+    pub fn abort(&mut self, t: ForkToken) -> Result<()>;
+    pub fn fork_depth(&self) -> u8;
+    #[cfg(debug_assertions)] pub fn check_invariants(&self);
+}
+pub struct ForkToken { /* opaque */ }
+```
+Bump allocator. Offset 0 reserved so `Handle::EMPTY` is a real empty value.
+COW: copy the arena on fork; `commit` keeps the child, `abort` restores the
+parent. Document that page-granular COW is the intended optimization and that
+this is the whole-arena version.
+
+### `frame.rs`
+```rust
+pub struct Frame { pub func: u32, pub pc: u32, pub base: u32,
+                   pub depth: u16, pub fork_depth: u8 }
+pub struct Stack;
+impl Stack {
+    pub fn new() -> Self;
+    pub fn push_frame(&mut self, func: u32, pc: u32, maxstack: u16) -> Result<()>;
+    pub fn pop_frame(&mut self) -> Option<Frame>;
+    pub fn frame(&self) -> &Frame;
+    pub fn frame_mut(&mut self) -> &mut Frame;
+    pub fn frames(&self) -> &[Frame];
+    pub fn depth(&self) -> usize;                     // frame count
+    pub fn push(&mut self, v: Value);                 // verified: cannot overflow
+    pub fn pop(&mut self) -> Value;                   // verified: cannot underflow
+    pub fn peek(&self, back: u16) -> Value;
+    pub fn operands(&self) -> &[Value];               // for snapshot
+    pub fn local(&self, slot: u16) -> Value;
+    pub fn set_local(&mut self, slot: u16, v: Value);
+    pub fn from_parts(frames: Vec<Frame>, operands: Vec<Value>) -> Self;
+}
+```
+`push`/`pop` do not return `Result` — the verifier proved they cannot fail. Say
+so in the doc comment and debug-assert it.
+
+### `budget.rs`
+```rust
+pub enum Dim { Tokens = 0, WallMs = 1, Tools = 2, Arena = 3 }
+impl Dim { pub fn from_byte(u8) -> Option<Self>; pub fn name(self) -> &'static str }
+pub struct Ledger;
+impl Ledger {
+    pub fn new(b: &Budgets) -> Self;
+    pub fn reserve(&mut self, d: Dim, amount: u64) -> Result<()>;   // E_BUDGET
+    pub fn release(&mut self, d: Dim, amount: u64);
+    pub fn spend(&mut self, d: Dim, amount: u64) -> Result<()>;
+    pub fn remaining(&self, d: Dim) -> u64;
+    pub fn spent(&self, d: Dim) -> u64;
+    pub fn reserved(&self, d: Dim) -> u64;
+    pub fn write(&self, out: &mut Vec<u8>);
+    pub fn read(buf: &[u8], b: &Budgets) -> Result<Self>;
+}
+```
+Two-phase. `reserve` fails if `spent + reserved + amount > limit`. `spend`
+settles against a reservation, releasing any excess.
+
+### `ctx.rs`
+```rust
+pub struct Segment { pub role: u8, pub text: Handle, pub tokens: u32 }
+pub struct Ring;
+impl Ring {
+    pub fn new() -> Self;
+    pub fn push(&mut self, role: u8, text: Handle, tokens: u32);
+    pub fn pop_oldest(&mut self, n: u32) -> u32;         // returns count dropped
+    pub fn window(&self) -> &[Segment];
+    pub fn cost(&self) -> u32;
+    pub fn write(&self, out: &mut Vec<u8>);
+    pub fn read(buf: &[u8]) -> Result<(Self, usize)>;    // value + bytes consumed
+}
+pub fn estimate_tokens(text: &str) -> u32;
+```
+Explicit eviction only — never drop a segment implicitly. `estimate_tokens` is a
+documented heuristic (bytes/4 with whitespace correction), not a real tokenizer;
+say so.
+
+### `trap.rs`
+```rust
+pub enum Trap {
+    Tool { id: u32, name: String, args: Vec<u8>, effect: EffectId },
+    Spawn { func: u32, args: Vec<u8>, effect: EffectId },
+    Await { effect: EffectId },
+    Poll { effect: EffectId },
+    Cancel { effect: EffectId },
+    Select { effects: Vec<EffectId> },
+    Checkpoint { label: String },
+    Yield,
+    Now, Rand,
+    Env { key: String },
+    Log { level: u8, message: String },
+    Reserve { dim: u8, amount: u64 },
+    Spend { dim: u8, amount: u64 },
+    QueryQuota { dim: u8 },
+}
+pub enum Answer {
+    Value(Value), Bytes { tag: Tag, data: Vec<u8> },
+    Effect(EffectId), Ready { effect: EffectId, ready: bool },
+    Selected { index: u32, value: Value },
+    Int(i64), Ack, Failed { code: Code, message: String },
+}
+pub enum Step { Trap(Trap), Halted(i64) }
+```
+This is the whole interpreter/host boundary. Nothing else crosses it.
+
+### `interp.rs`
+```rust
+pub struct Limits { pub arena: u32, pub max_frames: u16, pub max_steps: u64 }
+impl Default for Limits;
+pub struct Vm<'i>;
+impl<'i> Vm<'i> {
+    pub fn new(image: &'i Image, limits: Limits) -> Self;
+    pub fn with_args(image: &'i Image, limits: Limits, args: Vec<String>) -> Self;
+    pub fn step(&mut self, answer: Option<Answer>) -> Result<Step>;
+    pub fn run<H: Host>(&mut self, host: &mut H) -> Result<i64>;
+    pub fn pc(&self) -> u32;
+    pub fn steps(&self) -> u64;
+    pub fn stack(&self) -> &Stack;
+    pub fn arena(&self) -> &Arena;
+    pub fn ledger(&self) -> &Ledger;
+    pub fn ctx(&self) -> &Ring;
+    pub fn state_digest(&self) -> Digest;      // for --verify-replay
+}
+pub trait Host {
+    fn perform(&mut self, trap: &Trap) -> Result<Answer>;
+}
+```
+`step` executes until it needs the host, then returns a `Trap`. Never performs
+I/O. No bounds/depth/type checks that the verifier already proved — comment the
+inner loop where clarity was traded for speed.
+
+### `cont.rs`
+```rust
+pub const SNAP_MAGIC: &[u8; 4] = b"CDXC";
+pub const SNAP_VERSION: u16 = 1;
+pub struct Snapshot { /* owns the bytes */ }
+impl Snapshot {
+    pub fn bytes(&self) -> &[u8];
+    pub fn digest(&self) -> Digest;
+    pub fn image_digest(&self) -> Digest;
+    pub fn journal_seq(&self) -> u64;
+    pub fn summary(&self) -> String;           // `cinder snap inspect` output
+}
+pub fn snapshot(vm: &Vm<'_>, journal_seq: u64) -> Snapshot;
+pub fn restore<'i>(image: &'i Image, snap: &Snapshot, limits: Limits) -> Result<Vm<'i>>;
+```
+Layout is in the README. `restore` validates digest, image binding, frame and
+operand bounds, and every arena handle's extent *before* constructing anything.
+
+### `journal.rs`
+```rust
+pub enum Kind { ToolIssue=1, ToolAnswer=2, ToolChunk=3, SpawnIssue=4, SpawnAnswer=5,
+                Now=6, Rand=7, Env=8, Log=9, Quota=10, Checkpoint=11,
+                Resume=12, Select=13, Cancel=14, Halt=15 }
+pub struct Record { pub seq: u64, pub kind: Kind, pub refs: u64,
+                    pub payload: Vec<u8>, pub prev: Digest, pub hash: Digest }
+pub struct Journal;
+impl Journal {
+    pub fn new() -> Self;
+    pub fn append(&mut self, kind: Kind, refs: u64, payload: Vec<u8>) -> &Record;
+    pub fn records(&self) -> &[Record];
+    pub fn head(&self) -> Digest;
+    pub fn seq(&self) -> u64;
+    pub fn encode(&self) -> Vec<u8>;
+    pub fn decode(bytes: &[u8]) -> Result<Self>;     // verifies the chain
+    pub fn verify_chain(&self) -> Result<()>;
+    pub fn cursor(&self) -> Cursor<'_>;
+}
+pub struct Cursor<'j>;
+impl<'j> Cursor<'j> {
+    pub fn next(&mut self) -> Result<&'j Record>;
+    pub fn expect(&mut self, kind: Kind) -> Result<&'j Record>;   // E_DIVERGE
+    pub fn seek(&mut self, seq: u64) -> Result<()>;
+    pub fn last_checkpoint_before(&self, seq: u64) -> Option<u64>;
+    pub fn pos(&self) -> u64;
+}
+```
+`hash = Digest::of(prev || seq || kind || refs || payload)`. `decode` must
+reject a broken chain with `E_CHAIN`.
+
+### `replay.rs`
+```rust
+pub struct ReplayHost<'j> { /* wraps Cursor */ }
+impl<'j> ReplayHost<'j> {
+    pub fn new(j: &'j Journal) -> Self;
+    pub fn seek(&mut self, seq: u64) -> Result<()>;
+    pub fn pos(&self) -> u64;
+}
+impl Host for ReplayHost<'_>;                       // serves answers from records
+pub struct RecordingHost<'a, H: Host> { /* wraps a real host + journal */ }
+impl<'a, H: Host> RecordingHost<'a, H> {
+    pub fn new(inner: &'a mut H, j: &'a mut Journal) -> Self;
+}
+impl<H: Host> Host for RecordingHost<'_, H>;
+pub fn verify_replay(image: &Image, j: &Journal) -> Result<VerifyReport>;
+pub struct VerifyReport { pub records: u64, pub matched: u64, pub head: Digest }
+```
+Divergence — the interpreter asking for a kind the journal does not have next —
+is `E_DIVERGE` naming the record index, expected kind, and requested kind.
+`RecordingHost` seals the record *before* the answer reaches the interpreter.
+
+### `disas.rs`
+```rust
+pub fn disassemble(image: &Image) -> String;
+pub fn disassemble_function(image: &Image, id: u32) -> String;
+pub fn format_insn(image: &Image, pc: u32, d: Decoded) -> String;
+pub fn annotate(image: &Image, pc: u32) -> Option<String>;   // resolved operand
+```
+Output resolves symbols: `ldc $sys ; "You triage..."`. Redact `env` values.
