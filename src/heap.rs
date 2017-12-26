@@ -63,3 +63,69 @@ impl Arena {
 
     /// Read a handle as UTF-8.
     pub fn get_str(&self, h: Handle) -> Result<&str> {
+        let raw = self.get(h)?;
+        std::str::from_utf8(raw)
+            .map_err(|_| Diag::new(Code::BadHandle, "str payload is not valid UTF-8"))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Snapshot the arena bytes for `cont::snapshot`.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Rebuild from a snapshot.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            data: bytes.to_vec(),
+        }
+    }
+}
+
+/// Which arena payload class a tag requires. Used by the verifier's `Handle`
+/// widening rule: `Handle` satisfies `Str`/`Bytes`/`List`, but the interpreter
+/// still checks the concrete tag at deref time.
+#[must_use]
+pub const fn classify(tag: Tag) -> Ty {
+    match tag {
+        Tag::Str | Tag::Bytes | Tag::List => Ty::Handle,
+        Tag::Int => Ty::Int,
+        Tag::Pending => Ty::Pending,
+        Tag::Void => Ty::Bottom,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alloc_and_get_roundtrip() {
+        let mut a = Arena::new();
+        let h = a.alloc(b"hello").unwrap();
+        assert_eq!(a.get(h).unwrap(), b"hello");
+        assert_eq!(a.get_str(h).unwrap(), "hello");
+    }
+
+    #[test]
+    fn extent_validation_rejects_forged_handles() {
+        let mut a = Arena::new();
+        let _ = a.alloc(b"x");
+        let forged = Handle::new(1000, 4);
+        assert_eq!(a.get(forged).unwrap_err().code, Code::BadHandle);
+    }
+
+    #[test]
+    fn lists_roundtrip_slots() {
+        let mut a = Arena::new();
+        let h = a.alloc_list(&[Value::int(1), Value::int(2)]).unwrap();
+        let items = a.get_list(h).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_int().unwrap(), 1);
+    }
+}
