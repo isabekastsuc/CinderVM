@@ -144,3 +144,150 @@ impl Image {
 
         put_bytes(&mut out, &self.code);
 
+        put_u32(&mut out, self.jump_tables.len() as u32);
+        for t in &self.jump_tables {
+            put_u32(&mut out, t.len() as u32);
+            for &v in t {
+                put_u32(&mut out, v);
+            }
+        }
+
+        out.push(u8::from(self.verified));
+        let digest = hash::hash_bytes(&out);
+        out.extend_from_slice(&digest.to_le_bytes());
+        out
+    }
+
+    /// Bytes that participate in the digest (everything but the trailing 8).
+    pub fn payload_bytes(&self) -> Vec<u8> {
+        let full = self.to_bytes();
+        full[..full.len() - 8].to_vec()
+    }
+
+    /// Parse and check a `.cdxb` container: magic, version, section bounds,
+    /// and digest. A container that survives this is structurally sound;
+    /// semantic invariants are [`crate::verify`]'s job.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Image> {
+        if bytes.len() < 5 {
+            return Err(Diag::new(Code::BadMagic, "container too short"));
+        }
+        if bytes[0..4] != CDXB_MAGIC {
+            return Err(Diag::new(Code::BadMagic, "not a .cdxb container"));
+        }
+        if bytes[4] != CDXB_VERSION {
+            return Err(Diag::new(
+                Code::BadMagic,
+                format!("unsupported container version {}", bytes[4]),
+            ));
+        }
+        let body = &bytes[..bytes.len() - 8];
+        let mut cur = Cursor {
+            data: bytes,
+            pos: 0,
+        };
+        cur.pos = 5;
+
+        let name = cur.take_str()?;
+
+        let n_consts = cur.take_u32()? as usize;
+        let mut constants = Vec::with_capacity(n_consts.min(4096));
+        for _ in 0..n_consts {
+            constants.push(cur.take_byte_vec()?);
+        }
+
+        let n_funcs = cur.take_u32()? as usize;
+        let mut funcs = Vec::with_capacity(n_funcs.min(4096));
+        for _ in 0..n_funcs {
+            let name = cur.take_str()?;
+            let code_off = cur.take_u32()?;
+            let code_len = cur.take_u32()?;
+            let maxstack = cur.take_u16()?;
+            let args = cur.take_u8()?;
+            let returns = cur.take_u8()?;
+            funcs.push(FuncMeta {
+                name,
+                code_off,
+                code_len,
+                maxstack,
+                args,
+                returns,
+            });
+        }
+
+        let n_tools = cur.take_u32()? as usize;
+        let mut tools = Vec::with_capacity(n_tools.min(4096));
+        for _ in 0..n_tools {
+            tools.push(cur.take_str()?);
+        }
+
+        let code = cur.take_byte_vec()?;
+
+        let n_tables = cur.take_u32()? as usize;
+        let mut jump_tables = Vec::with_capacity(n_tables.min(4096));
+        for _ in 0..n_tables {
+            let n = cur.take_u32()? as usize;
+            if cur.pos + n * 4 > body.len() {
+                return Err(Diag::new(
+                    Code::TruncatedSection,
+                    "jump table extends past end of file",
+                ));
+            }
+            let mut t = Vec::with_capacity(n.min(65536));
+            for _ in 0..n {
+                t.push(cur.take_u32()?);
+            }
+            jump_tables.push(t);
+        }
+
+        let verified = cur.take_u8()? == 1;
+        if cur.pos != body.len() {
+            return Err(Diag::new(
+                Code::TruncatedSection,
+                "trailing bytes in container",
+            ));
+        }
+
+        let stored = u64::from_le_bytes(
+            bytes[bytes.len() - 8..]
+                .try_into()
+                .map_err(|_| Diag::new(Code::BadChecksum, "digest unreadable"))?,
+        );
+        if hash::hash_bytes(body) != stored {
+            return Err(Diag::new(
+                Code::BadChecksum,
+                "image digest does not match its contents",
+            ));
+        }
+
+        Ok(Image {
+            name,
+            constants,
+            funcs,
+            tools,
+            code,
+            jump_tables,
+            verified,
+        })
+    }
+}
+
+/// Decode the entire code section in `INSN_LEN` strides. The assembler only
+/// emits known opcodes, so a byte that fails to decode here means the object
+/// was tampered with between assembly and sealing.
+pub fn seal_decode_check(code: &[u8]) -> Result<()> {
+    if code.len() % crate::isa::INSN_LEN != 0 {
+        return Err(Diag::new(
+            Code::TruncatedSection,
+            "code section is not a multiple of the instruction length",
+        ));
+    }
+    let mut off = 0;
+    while off < code.len() {
+        if crate::isa::decode(code, off).is_none() {
+            return Err(Diag::new(
+                Code::UnassignedOpcode,
+                format!("opcode byte {:#04x} does not decode", code[off]),
+            ));
+        }
+        off += crate::isa::INSN_LEN;
+    }

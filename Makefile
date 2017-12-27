@@ -27,3 +27,32 @@ test:
 verify:
 	$(CARGO) fmt --all --check
 	$(CARGO) clippy --all-targets --all-features -- -D warnings
+	$(GO) vet $(GO_PKGS)
+	$(GO) run honnef.co/go/tools/cmd/staticcheck@latest $(GO_PKGS)
+	$(MAKE) isa
+	git diff --exit-code -- docs/isa.md
+
+bench:
+	$(CARGO) bench --bench dispatch -- --save-baseline $(BASELINE)
+	$(CARGO) bench --bench snapshot -- --save-baseline $(BASELINE)
+
+fuzz:
+	$(CARGO) run --profile fuzz --bin cinder-fuzz -- --seconds $(FUZZ_T) --corpus corpus/accept
+
+corpus:
+	$(CARGO) run --quiet --bin cinder -- corpus corpus/ --expect corpus/MANIFEST.tsv --verbose
+
+# docs/isa.md is generated from the const table in src/isa.rs. `verify` fails on drift.
+isa:
+	$(CARGO) run --quiet --bin cinderc -- --emit-isa-md > docs/isa.md
+
+miri:
+	MIRIFLAGS='-Zmiri-strict-provenance' $(CARGO) +nightly miri test --lib heap:: cont::
+
+install:
+	$(CARGO) install --path . --locked
+	$(GO) install ./cmd/cinderd
+
+docker:
+	docker build -t cindervm:$(shell git rev-parse --short HEAD) .
+
