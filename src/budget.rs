@@ -23,28 +23,3 @@ impl Default for Budget {
         Self {
             remaining: [i64::MAX, i64::MAX, i64::MAX, i64::MAX],
             reserved: [0; DIM_COUNT],
-        }
-    }
-}
-
-impl Budget {
-    #[must_use]
-    pub fn new(tokens: i64, wall_ms: i64, tool_calls: i64, arena_bytes: i64) -> Self {
-        Self {
-            remaining: [tokens, wall_ms, tool_calls, arena_bytes],
-            reserved: [0; DIM_COUNT],
-        }
-    }
-
-    fn dim(d: u8) -> Result<usize> {
-        if (d as usize) < DIM_COUNT {
-            Ok(d as usize)
-        } else {
-            Err(Diag::new(
-                Code::BudgetExceeded,
-                format!("unknown budget dimension {d}"),
-            ))
-        }
-    }
-
-    /// Lease `amount` on `dim`. Refused at reserve time, never after the spend.

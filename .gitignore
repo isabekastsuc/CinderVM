@@ -6,3 +6,11 @@
 # (see https://doc.rust-lang.org/cargo/faq.html#why-have-cargolock-in-version-control)
 
 # Generated artifacts: bytecode images, journals, snapshots
+corpus/*.cdxb
+*.cdxc
+*.jl
+
+# Go build artifacts (supervisor)
+/cmd/cinderd/cinderd
+/cinderd
+

@@ -261,3 +261,134 @@ impl Cfg {
     /// an out-of-range index is a bug in the caller, not bad input, and a
     /// `Result` here would only push the `unwrap` outwards.
     #[must_use]
+    pub fn insn_at(&self, idx: u32) -> Decoded {
+        self.insns[idx as usize]
+    }
+
+    /// Number of instructions in the function.
+    #[must_use]
+    pub fn insn_count(&self) -> u32 {
+        self.insns.len() as u32
+    }
+
+    /// The decoded instruction stream, function-local order.
+    #[must_use]
+    pub fn decoded(&self) -> &[Decoded] {
+        &self.insns
+    }
+
+    /// Absolute byte offset of instruction `idx` in the image code section.
+    /// Panics on an out-of-range index, for the reason given on
+    /// [`Cfg::insn_at`].
+    #[must_use]
+    pub fn byte_offset(&self, idx: u32) -> u32 {
+        self.offsets[idx as usize]
+    }
+
+    /// Inverse of [`Cfg::byte_offset`]: the instruction index that begins at
+    /// absolute offset `off`, or `None` if `off` is outside the function or
+    /// interior to an instruction. `O(log n)` — the offset table is ascending.
+    #[must_use]
+    pub fn index_at_byte(&self, off: u32) -> Option<u32> {
+        self.offsets.binary_search(&off).ok().map(|i| i as u32)
+    }
+
+    /// Block ids not reachable from the entry, ascending. Non-empty means the
+    /// function carries dead code, which `verify.rs` rejects with
+    /// `E_UNREACHABLE`; the CFG itself merely reports it.
+    #[must_use]
+    pub fn unreachable(&self) -> Vec<u32> {
+        self.rpo_num
+            .iter()
+            .enumerate()
+            .filter(|(_, &pos)| pos == UNDEF)
+            .map(|(id, _)| id as u32)
+            .collect()
+    }
+
+    fn find_back_edges(&self) -> Vec<(u32, u32)> {
+        let mut out = Vec::new();
+        for (id, b) in self.blocks.iter().enumerate() {
+            let tail = id as u32;
+            if self.rpo_num[id] == UNDEF {
+                continue;
+            }
+            for &h in &b.succs {
+                if self.dominates(h, tail) {
+                    out.push((tail, h));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Decode `code[f.code_off .. f.code_off + f.code_len]` linearly, returning the
+/// instruction stream and its absolute offset table.
+fn decode_range(code: &[u8], f: &FuncMeta) -> Result<(Vec<Decoded>, Vec<u32>)> {
+    let lo = f.code_off as usize;
+    let hi = lo + f.code_len as usize;
+    let Some(body) = code.get(lo..hi) else {
+        return Err(Diag::new(
+            Code::TruncatedSection,
+            format!(
+                "function `{}` claims code {lo}..{hi} but the section is {} bytes",
+                f.name,
+                code.len()
+            ),
+        ));
+    };
+
+    let mut insns = Vec::new();
+    let mut offsets = Vec::new();
+    let mut off = 0usize;
+    while off < body.len() {
+        let Some(d) = isa::decode(body, off) else {
+            let pc = insns.len() as u32;
+            let wide = body[off] == isa::WIDE_PREFIX;
+            let need = if wide {
+                2 * isa::INSN_LEN
+            } else {
+                isa::INSN_LEN
+            };
+            if off + need > body.len() {
+                return Err(bad(
+                    Code::MisalignedInsn,
+                    format!(
+                        "function `{}` ends mid-instruction: {} trailing byte(s) at offset {}",
+                        f.name,
+                        body.len() - off,
+                        lo + off
+                    ),
+                    pc,
+                ));
+            }
+            return Err(bad(
+                Code::UnassignedOpcode,
+                format!(
+                    "byte {:#04x} at offset {} is not an opcode",
+                    body[off],
+                    lo + off
+                ),
+                pc,
+            ));
+        };
+        offsets.push((lo + off) as u32);
+        insns.push(d);
+        off += usize::from(d.len);
+    }
+    debug_assert_eq!(off, body.len(), "decode never reads past the slice");
+    Ok((insns, offsets))
+}
+
+/// Successors of instruction `i` as instruction indices, validating every edge.
+///
+/// Called once per instruction to find leaders and once per block to fill
+/// `succs`; recomputing is cheaper than caching a `Vec` per instruction and
+/// keeps the two passes from drifting.
+fn raw_succs(insns: &[Decoded], i: u32, jump_tables: &[Vec<u32>]) -> Result<Vec<u32>> {
+    let n = insns.len() as u32;
+    let d = insns[i as usize];
+    let next = i + 1;
+    let check = |t: u32| -> Result<u32> {
+        if t < n {
