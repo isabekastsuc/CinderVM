@@ -30,14 +30,3 @@ pub enum Trap {
     /// Cooperative preemption point (`yieldctx`).
     Yield,
 }
-
-/// The host's reply to a [`Trap`].
-#[derive(Clone, Debug)]
-pub enum Answer {
-    /// A value resolving the pending effect or oracle.
-    Value(Value),
-    /// The effect failed; `value` is the structured error payload.
-    Fail(Value),
-    /// The host declined to continue (shutdown path).
-    Shutdown,
-}
