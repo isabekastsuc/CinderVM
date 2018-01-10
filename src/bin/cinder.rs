@@ -16,3 +16,21 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("explain") => {
+            let code = args.get(1).map(String::as_str).unwrap_or("");
+            match Code::parse(code) {
+                Some(c) => {
+                    println!("{}: {} (phase {:?})", c.as_str(), c.blurb(), c.phase());
+                    ExitCode::SUCCESS
+                }
+                None => {
+                    eprintln!("unknown code `{code}`; known codes:");
+                    for c in Code::all() {
+                        eprintln!("  {} — {}", c.as_str(), c.blurb());
+                    }
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("run") => {
+            let file = args.get(1).map(String::as_str).unwrap_or("out.cdxb");
+            let mut argv = std::env::args();
