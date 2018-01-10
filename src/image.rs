@@ -273,3 +273,95 @@ impl Image {
 
 /// Decode the entire code section in `INSN_LEN` strides. The assembler only
 /// emits known opcodes, so a byte that fails to decode here means the object
+/// was tampered with between assembly and sealing.
+pub fn seal_decode_check(code: &[u8]) -> Result<()> {
+    if code.len() % crate::isa::INSN_LEN != 0 {
+        return Err(Diag::new(
+            Code::TruncatedSection,
+            "code section is not a multiple of the instruction length",
+        ));
+    }
+    let mut off = 0;
+    while off < code.len() {
+        if crate::isa::decode(code, off).is_none() {
+            return Err(Diag::new(
+                Code::UnassignedOpcode,
+                format!("opcode byte {:#04x} does not decode", code[off]),
+            ));
+        }
+        off += crate::isa::INSN_LEN;
+    }
+    Ok(())
+}
+
+struct Cursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl Cursor<'_> {
+    fn take_u8(&mut self) -> Result<u8> {
+        let b = *self
+            .data
+            .get(self.pos)
+            .ok_or_else(|| Diag::new(Code::TruncatedSection, "section extends past end of file"))?;
+        self.pos += 1;
+        Ok(b)
+    }
+
+    fn take_u16(&mut self) -> Result<u16> {
+        let lo = self.take_u8()? as u16;
+        let hi = self.take_u8()? as u16;
+        Ok(lo | (hi << 8))
+    }
+
+    fn take_u32(&mut self) -> Result<u32> {
+        let mut buf = [0u8; 4];
+        for slot in &mut buf {
+            *slot = self.take_u8()?;
+        }
+        Ok(u32::from_le_bytes(buf))
+    }
+
+    fn take_raw(&mut self, n: usize) -> Result<&[u8]> {
+        if self.pos + n > self.data.len() {
+            return Err(Diag::new(
+                Code::TruncatedSection,
+                "section extends past end of file",
+            ));
+        }
+        let s = &self.data[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(s)
+    }
+
+    fn take_str(&mut self) -> Result<String> {
+        let n = self.take_u32()? as usize;
+        let raw = self.take_raw(n)?;
+        String::from_utf8(raw.to_vec())
+            .map_err(|_| Diag::new(Code::BadMagic, "section is not valid UTF-8"))
+    }
+
+    fn take_byte_vec(&mut self) -> Result<Vec<u8>> {
+        let n = self.take_u32()? as usize;
+        Ok(self.take_raw(n)?.to_vec())
+    }
+}
+
+fn put_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn put_str(out: &mut Vec<u8>, s: &str) {
+    put_u32(out, s.len() as u32);
+    out.extend_from_slice(s.as_bytes());
+}
+
+fn put_bytes(out: &mut Vec<u8>, b: &[u8]) {
+    put_u32(out, b.len() as u32);
+    out.extend_from_slice(b);
+}
