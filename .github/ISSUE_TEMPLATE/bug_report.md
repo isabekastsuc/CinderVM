@@ -11,7 +11,3 @@ labels: verifier
 **Steps to reproduce**
 
 ```
-# exact commands + the .cdx source involved (scrub private paths)
-```
-
-**Expected behavior**

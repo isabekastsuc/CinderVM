@@ -43,3 +43,48 @@ impl Host {
             Value::read(&buf)
         }?;
         Ok(Answer::Value(v))
+    }
+
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.journal.len().saturating_sub(self.cursor as usize)
+    }
+}
+
+/// A live host that captures every answer into a journal for later replay.
+#[derive(Clone, Debug, Default)]
+pub struct Recorder {
+    journal: Journal,
+}
+
+impl Recorder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            journal: Journal::new(),
+        }
+    }
+
+    pub fn record(&mut self, trap: &Trap, answer: &Answer) -> Result<()> {
+        let payload = match (trap, answer) {
+            (Trap::Oracle(_), Answer::Value(v)) => {
+                let mut buf = Vec::with_capacity(16);
+                v.write(&mut buf);
+                buf
+            }
+            (Trap::Effect { .. }, Answer::Value(v)) => {
+                let mut buf = Vec::new();
+                v.write(&mut buf);
+                buf
+            }
+            _ => vec![0u8; 16],
+        };
+        let kind = if matches!(trap, Trap::Oracle(_)) {
+            KIND_ORACLE
+        } else {
+            KIND_EFFECT
+        };
+        self.journal.append(kind, &payload)?;
+        Ok(())
+    }
+

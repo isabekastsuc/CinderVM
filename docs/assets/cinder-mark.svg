@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 132 132" width="132" height="132" role="img" aria-labelledby="mark-title mark-desc">
+  <title id="mark-title">cindervm</title>
+  <desc id="mark-desc">A bottom-anchored operand stack of four slots feeds a dispatch arrow into a program-counter ring. A dashed line across the top marks a continuation snapshot boundary.</desc>
+  <defs>
+    <linearGradient id="ember" x1="0" y1="1" x2="0.35" y2="0">
+      <stop offset="0" stop-color="#7a1f0f"/>
+      <stop offset="0.45" stop-color="#e2521b"/>
+      <stop offset="1" stop-color="#ffc061"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="6" y="6" width="120" height="120" rx="26" fill="#12161c"/>
+  <rect x="6.5" y="6.5" width="119" height="119" rx="25.5" fill="none" stroke="#3a4250" stroke-width="1"/>
+
+  <!-- operand stack: four slots, bottom-anchored, lower two live (ember) -->
+  <g fill="none" stroke="#4a5262" stroke-width="2">
+    <rect x="26" y="86" width="34" height="14" rx="3"/>
+    <rect x="26" y="68" width="34" height="14" rx="3"/>
