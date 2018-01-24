@@ -70,3 +70,75 @@ pub fn restore(vm: &mut Vm, bytes: &[u8]) -> Result<()> {
             }
             if v.tag().is_arena() {
                 let h = v.as_handle()?;
+                if h.end() as usize > arena_len {
+                    return Err(Diag::new(Code::BadHandle, "handle outside snapshot arena"));
+                }
+            }
+            slots.push(v);
+        }
+        let sp = u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes")) as usize;
+        let maxstack = u16::from_le_bytes(c.take(2)?.try_into().expect("2 bytes"));
+        let returns = c.take(1)?[0];
+        if sp > slots.len() {
+            return Err(Diag::new(
+                Code::SnapshotCorrupt,
+                "stack pointer exceeds slots",
+            ));
+        }
+        frames.push(Frame {
+            func,
+            pc,
+            slots,
+            sp,
+            maxstack,
+            returns,
+        });
+    }
+    vm.restore_frames(frames);
+    Ok(())
+}
+
+struct Cursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self.pos + n;
+        if end > self.data.len() {
+            return Err(Diag::new(Code::SnapshotCorrupt, "snapshot truncated"));
+        }
+        let out = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asm::assemble;
+    use crate::verify::admit;
+
+    #[test]
+    fn bad_magic_is_rejected() {
+        let img = admit(
+            assemble(
+                "t.cdx",
+                ".fn main() -> i32\n.maxstack 1\nmain:\n    ldi 0\n    halt\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut vm = Vm::new(&img, crate::interp::Limits::default());
+        assert_eq!(
+            restore(&mut vm, b"XXXX").unwrap_err().code,
+            Code::SnapshotCorrupt
+        );
+    }
+}
