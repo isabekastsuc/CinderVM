@@ -1,0 +1,302 @@
+//! The dispatch loop. The interpreter performs no I/O; effects surface as
+//! [`Trap`]s and the host answers with [`Answer`]s.
+
+use crate::budget::Budget;
+use crate::ctx::ContextRing;
+use crate::diag::{Code, Diag, Result};
+use crate::frame::Frame;
+use crate::heap::Arena;
+use crate::image::Image;
+use crate::isa::{self, Decoded, Op, Ty};
+use crate::trap::{Answer, Step, Trap};
+use crate::value::{EffectId, Handle, Tag, Value};
+
+/// Runtime limits. Defaults are generous; the supervisor tightens them.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub max_steps: u64,
+    pub max_frames: usize,
+    pub max_arena: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_steps: 1_000_000,
+            max_frames: 256,
+            max_arena: 64 << 20,
+        }
+    }
+}
+
+/// The machine.
+pub struct Vm {
+    image: Image,
+    frames: Vec<Frame>,
+    arena: Arena,
+    budget: Budget,
+    ctx: ContextRing,
+    steps: u64,
+    limits: Limits,
+    next_effect: u64,
+    fork_depth: u32,
+    staged_arena: Option<Arena>,
+    pending: Option<Trap>,
+    halt: Option<i64>,
+}
+
+impl Vm {
+    #[must_use]
+    pub fn new(image: &Image, limits: Limits) -> Self {
+        let entry = image
+            .funcs()
+            .iter()
+            .position(|f| f.name == "main")
+            .unwrap_or(0);
+        let f = &image.funcs()[entry];
+        let frame = Frame::new(entry as u32, Vec::new(), 0, f.maxstack, f.returns);
+        Self {
+            image: image.clone(),
+            frames: vec![frame],
+            arena: Arena::new(),
+            budget: Budget::default(),
+            ctx: ContextRing::new(64),
+            steps: 0,
+            limits,
+            next_effect: 1,
+            fork_depth: 0,
+            staged_arena: None,
+            pending: None,
+            halt: None,
+        }
+    }
+
+    /// Run until the machine halts or traps. `answer` is the host's reply to
+    /// the previous trap, when continuing after one.
+    pub fn step(&mut self, answer: Option<Answer>) -> Result<Step> {
+        if let Some(ans) = answer {
+            match ans {
+                Answer::Value(v) | Answer::Fail(v) => {
+                    self.frames.last_mut().expect("frame").push(v)?
+                }
+                Answer::Shutdown => return Ok(Step::Halted(1)),
+            }
+        }
+        loop {
+            if let Some(t) = self.pending.take() {
+                return Ok(Step::Trap(t));
+            }
+            if let Some(code) = self.halt.take() {
+                return Ok(Step::Halted(code));
+            }
+            if self.frames.is_empty() {
+                return Ok(Step::Halted(0));
+            }
+            self.steps += 1;
+            if self.steps > self.limits.max_steps {
+                return Err(Diag::new(Code::BudgetExceeded, "step limit exceeded"));
+            }
+            let fi = self.frames.len() - 1;
+            let f = &self.image.funcs()[self.frames[fi].func as usize];
+            let off = f.code_off as usize + (self.frames[fi].pc as usize) * isa::INSN_LEN;
+            let d = isa::decode(self.image.code(), off)
+                .ok_or_else(|| Diag::new(Code::UnassignedOpcode, "pc ran past the code section"))?;
+            self.exec(d)?;
+        }
+    }
+
+    fn exec(&mut self, d: Decoded) -> Result<()> {
+        let fi = self.frames.len() - 1;
+        let op = d.op;
+        let mut advance = true;
+        {
+            let frame = &mut self.frames[fi];
+            match op {
+                Op::Nop => {}
+                Op::Ldc => {
+                    let bytes = self
+                        .image
+                        .constants()
+                        .get(d.b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let h = self.arena.alloc(&bytes)?;
+                    let v = if std::str::from_utf8(&bytes).is_ok() {
+                        Value::str(h)
+                    } else {
+                        Value::bytes(h)
+                    };
+                    frame.push(v)?;
+                }
+                Op::Ldi => frame.push(Value::int(isa::imm(d)))?,
+                Op::Dup => {
+                    let v = frame.peek(0)?;
+                    frame.push(v)?;
+                }
+                Op::DupN => {
+                    let v = frame.peek(d.b as usize)?;
+                    frame.push(v)?;
+                }
+                Op::Drop => {
+                    frame.pop()?;
+                }
+                Op::Swap => {
+                    let a = frame.pop()?;
+                    let b = frame.pop()?;
+                    frame.push(a)?;
+                    frame.push(b)?;
+                }
+                Op::Rot => {
+                    let a = frame.pop()?;
+                    let b = frame.pop()?;
+                    let c = frame.pop()?;
+                    frame.push(a)?;
+                    frame.push(c)?;
+                    frame.push(b)?;
+                }
+                Op::Ldl => {
+                    let v = frame.load_local(d.b as usize)?;
+                    frame.push(v)?;
+                }
+                Op::Stl => {
+                    let v = frame.pop()?;
+                    frame.store_local(d.b as usize, v)?;
+                }
+                Op::Argv => {
+                    let h = self.arena.alloc(&[0u8])?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Pack => {
+                    let items = frame.pop_n(d.b as usize)?;
+                    let h = self.arena.alloc_list(&items)?;
+                    frame.push(Value::list(h))?;
+                }
+                Op::Unpack => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    for v in self.arena.get_list(h)? {
+                        frame.push(v)?;
+                    }
+                }
+                Op::Idx => {
+                    let list = frame.pop()?;
+                    let idx = frame.pop()?.as_int()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let items = self.arena.get_list(h)?;
+                    if idx < 0 || idx as usize >= items.len() {
+                        return Err(Diag::new(Code::IndexRange, "index out of range"));
+                    }
+                    frame.push(items[idx as usize])?;
+                }
+                Op::Len => {
+                    let v = frame.pop()?;
+                    let h = v.as_handle()?;
+                    let len = self.arena.get(h)?.len() as i64;
+                    frame.push(Value::int(len))?;
+                }
+                Op::Cat => {
+                    let b = frame.pop()?;
+                    let a = frame.pop()?;
+                    let ha = a.as_handle_of(Tag::Str)?;
+                    let hb = b.as_handle_of(Tag::Str)?;
+                    let mut buf = self.arena.get(ha)?.to_vec();
+                    buf.extend_from_slice(self.arena.get(hb)?);
+                    let h = self.arena.alloc(&buf)?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Fmt => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let items = self.arena.get_list(h)?;
+                    let template = String::from_utf8_lossy(
+                        self.image
+                            .constants()
+                            .get(d.b as usize)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    );
+                    let mut out = String::new();
+                    let mut next = 0usize;
+                    let mut last = false;
+                    for part in template.split("{}") {
+                        out.push_str(part);
+                        if next < items.len() && !last {
+                            out.push_str(&format_short(items[next], &self.arena));
+                            next += 1;
+                        }
+                        last = next >= items.len();
+                    }
+                    let h = self.arena.alloc(out.as_bytes())?;
+                    frame.push(Value::str(h))?;
+                }
+                Op::Slice => {
+                    let v = frame.pop()?;
+                    let hi = frame.pop()?.as_int()?;
+                    let lo = frame.pop()?.as_int()?;
+                    let h = v.as_handle()?;
+                    let raw = self.arena.get(h)?.to_vec();
+                    let lo = lo.clamp(0, raw.len() as i64) as usize;
+                    let hi = hi.clamp(0, raw.len() as i64) as usize;
+                    let h = self.arena.alloc(&raw[lo.min(hi)..hi.max(lo)])?;
+                    frame.push(Value::bytes(h))?;
+                }
+                Op::Find => {
+                    let needle = frame.pop()?;
+                    let hay = frame.pop()?;
+                    let hay = self.arena.get(hay.as_handle()?)?.to_vec();
+                    let needle = self.arena.get(needle.as_handle()?)?.to_vec();
+                    let pos = hay.windows(needle.len()).position(|w| w == needle);
+                    frame.push(Value::int(pos.map_or(-1, |p| p as i64)))?;
+                }
+                Op::Add => binop(&mut self.frames[fi], |a, b| a.wrapping_add(b))?,
+                Op::Sub => binop(&mut self.frames[fi], |a, b| a.wrapping_sub(b))?,
+                Op::Mul => binop(&mut self.frames[fi], |a, b| a.wrapping_mul(b))?,
+                Op::Div => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    if b == 0 {
+                        return Err(Diag::new(Code::DivideByZero, "divide by zero"));
+                    }
+                    frame.push(Value::int(a.wrapping_div(b)))?;
+                }
+                Op::Mod => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    if b == 0 {
+                        return Err(Diag::new(Code::DivideByZero, "divide by zero"));
+                    }
+                    frame.push(Value::int(a.wrapping_rem(b)))?;
+                }
+                Op::Eq => {
+                    let b = frame.pop()?;
+                    let a = frame.pop()?;
+                    let eq = if a.ty() == b.ty() && a.ty() != Ty::Int {
+                        let ha = a.as_handle()?;
+                        let hb = b.as_handle()?;
+                        self.arena.get(ha)? == self.arena.get(hb)?
+                    } else {
+                        a.shallow_eq(b)
+                    };
+                    frame.push(Value::bool(eq))?;
+                }
+                Op::Lt => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::bool(a < b))?;
+                }
+                Op::Not => {
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::bool(a == 0))?;
+                }
+                Op::And => binop(&mut self.frames[fi], |a, b| a & b)?,
+                Op::Or => binop(&mut self.frames[fi], |a, b| a | b)?,
+                Op::Shl => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::int(a.wrapping_shl((b & 63) as u32)))?;
+                }
+                Op::Shr => {
+                    let b = frame.pop()?.as_int()?;
+                    let a = frame.pop()?.as_int()?;
+                    frame.push(Value::int(a.wrapping_shr((b & 63) as u32)))?;
+                }
