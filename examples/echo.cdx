@@ -1,5 +1,3 @@
 .const greeting "hello from cinder"
 .fn main() -> i32
 .maxstack 2
-main:
-    ldc greeting
