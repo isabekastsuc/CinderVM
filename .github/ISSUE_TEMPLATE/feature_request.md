@@ -4,3 +4,10 @@ about: Suggest an improvement to CinderVM
 labels: toolchain
 ---
 
+**Problem to solve**
+
+<!-- what workflow is blocked or awkward today -->
+
+**Proposed change**
+
+**Alternatives considered**
