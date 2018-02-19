@@ -41,18 +41,3 @@ fuzz:
 
 corpus:
 	$(CARGO) run --quiet --bin cinder -- corpus corpus/ --expect corpus/MANIFEST.tsv --verbose
-
-# docs/isa.md is generated from the const table in src/isa.rs. `verify` fails on drift.
-isa:
-	$(CARGO) run --quiet --bin cinderc -- --emit-isa-md > docs/isa.md
-
-miri:
-	MIRIFLAGS='-Zmiri-strict-provenance' $(CARGO) +nightly miri test --lib heap:: cont::
-
-install:
-	$(CARGO) install --path . --locked
-	$(GO) install ./cmd/cinderd
-
-docker:
-	docker build -t cindervm:$(shell git rev-parse --short HEAD) .
-
