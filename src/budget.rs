@@ -60,3 +60,66 @@ impl Budget {
         self.reserved[d] += amount;
         Ok(())
     }
+
+    /// Return an unused reservation.
+    pub fn release(&mut self, dim: u8, amount: i64) -> Result<()> {
+        let d = Self::dim(dim)?;
+        if amount < 0 || self.reserved[d] < amount {
+            return Err(Diag::new(
+                Code::BudgetExceeded,
+                "release exceeds reservation",
+            ));
+        }
+        self.reserved[d] -= amount;
+        self.remaining[d] += amount;
+        Ok(())
+    }
+
+    /// Settle a reservation with actual usage; the difference stays spent.
+    pub fn spend(&mut self, dim: u8, amount: i64) -> Result<()> {
+        let d = Self::dim(dim)?;
+        if amount < 0 || self.reserved[d] < amount {
+            return Err(Diag::new(Code::BudgetExceeded, "spend exceeds reservation"));
+        }
+        self.reserved[d] -= amount;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn remaining(&self, dim: u8) -> i64 {
+        self.remaining.get(dim as usize).copied().unwrap_or(0)
+    }
+
+    /// Account arena growth.
+    pub fn charge_arena(&mut self, bytes: usize) -> Result<()> {
+        let d = DIM_ARENA_BYTES as usize;
+        if self.remaining[d] < bytes as i64 {
+            return Err(Diag::new(Code::ArenaExhausted, "arena budget exhausted"));
+        }
+        self.remaining[d] -= bytes as i64;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserve_release_roundtrip() {
+        let mut b = Budget::new(100, 100, 10, 1000);
+        b.reserve(DIM_TOKENS, 30).unwrap();
+        assert_eq!(b.remaining(DIM_TOKENS), 70);
+        b.release(DIM_TOKENS, 30).unwrap();
+        assert_eq!(b.remaining(DIM_TOKENS), 100);
+    }
+
+    #[test]
+    fn spend_consumes_the_reservation() {
+        let mut b = Budget::new(100, 100, 10, 1000);
+        b.reserve(DIM_TOKENS, 30).unwrap();
+        b.spend(DIM_TOKENS, 25).unwrap();
+        assert_eq!(b.remaining(DIM_TOKENS), 70);
+        assert!(b.reserve(DIM_TOKENS, 71).is_err());
+    }
+}
