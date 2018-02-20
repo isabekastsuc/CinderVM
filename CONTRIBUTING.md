@@ -83,3 +83,46 @@ body when the why is not obvious:
 
 ```
 feat(verifier): report both predecessor blocks on E_DEPTH_MERGE
+
+The diagnostic named only the first predecessor, which made merges
+reachable from three or more blocks confusing to debug. Collect all
+predecessors during the fixpoint and list them in order of visit.
+
+Closes #214
+```
+
+- Allowed types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`, `ci`.
+- Common scopes: `isa`, `asm`, `verify`, `interp`, `cont`, `journal`,
+  `replay`, `heap`, `cinderd`, `sched`, `broker`.
+- A breaking change (new ISA version, changed journal semantics) must be
+  flagged in the footer: `BREAKING CHANGE: ...` — this is how `CHANGELOG.md`
+  gets its `Changed`/`Removed` entries.
+- Add a `CHANGELOG.md` entry in the same commit for anything a user could
+  observe.
+
+## Checklist before a PR
+
+- [ ] `cargo fmt --all --check` is clean.
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings` is clean.
+- [ ] `cargo test --all-features` passes.
+- [ ] `make test` passes (this includes the corpus conformance run and the
+      cross-language e2e tests, which need `cinderc` to be built first).
+- [ ] If you touched an opcode: `docs/isa.md` regenerated
+      (`cargo run --bin cinderc -- --emit-isa-md > docs/isa.md`) and corpus
+      images added or updated per the [corpus rules](#corpus-rules).
+- [ ] If you changed verifier or continuation behavior: `make fuzz T=60` ran
+      clean, and `make miri` passed for `heap::` / `cont::` if you touched
+      either.
+- [ ] No new dependencies in the core crate. Zero-dependency is a policy,
+      not an accident: dev-dependencies (criterion, proptest) are fine.
+- [ ] No `unsafe`. The crate denies it at the lint level
+      (`#![deny(unsafe_code)]`); a change that needs `unsafe` is a design
+      discussion, not a PR.
+- [ ] `CHANGELOG.md` entry added under `[Unreleased]`.
+
+## Review process
+
+- PRs are reviewed by at least one maintainer; changes to `src/verify.rs`,
+  `src/cont.rs`, and `src/journal.rs` need two.
+- Keep PRs focused. A PR that mixes a corpus addition with a verifier change
+  is harder to review and is usually asked to split.
