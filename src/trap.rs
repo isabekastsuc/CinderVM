@@ -12,17 +12,3 @@ pub enum Step {
     /// The interpreter needs the host: an effect to perform or an oracle to
     /// answer.
     Trap(Trap),
-}
-
-/// What the interpreter wants from the host.
-#[derive(Clone, Debug)]
-pub enum Trap {
-    /// Run tool `tool` with the packed argument list. The host answers with
-    /// [`Answer::Effect`].
-    Effect {
-        id: EffectId,
-        tool: u32,
-        args: Vec<Value>,
-    },
-    /// A non-deterministic source (`now`, `rand`, `env`, `log`, `queryq`).
-    /// The host's reply is journalled so replay reproduces it exactly.

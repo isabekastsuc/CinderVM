@@ -15,20 +15,3 @@ exclude = ["docs/assets/*", "corpus/*", ".github/*"]
 name = "cindervm"
 path = "src/lib.rs"
 
-[[bin]]
-name = "cinderc"
-path = "src/bin/cinderc.rs"
-
-[[bin]]
-name = "cinder"
-path = "src/bin/cinder.rs"
-
-[[bin]]
-name = "cinder-fuzz"
-path = "src/bin/cinder_fuzz.rs"
-
-[features]
-default = ["wire"]
-wire = []
-trace-hooks = []
-unstable-jit = []
