@@ -311,3 +311,160 @@
 
 - tests tighten wide encoding
 
+- journal clarify type lattice
+
+- journal wire up fork balance
+
+- interp stabilize lexer spans
+
+- lexer extend type lattice
+
+- core wire up constant pool
+
+- fuzz extend journal chain
+
+- cli add constant pool
+
+- cli wire up image sealing
+
+- journal stabilize lexer spans
+
+- asm drop wide encoding
+
+- packaging document budget ledger
+
+- cli simplify wire framing
+
+- snapshot simplify label resolution
+
+- wire add stack depth checks
+
+- arena refactor type lattice
+
+- verifier add arena alignment
+
+- core trim fuzz harness
+
+- docs add budget ledger
+
+- interp add label resolution
+
+- interp document label resolution
+
+- tests extend exit codes
+
+- interp add wide encoding
+
+- disasm rework wire framing
+
+- wire fix abstract interpretation
+
+- fuzz clarify context ring
+
+- isa wire up abstract interpretation
+
+- cli clarify stack depth checks
+
+- asm harden fuzz harness
+
+- asm stabilize abstract interpretation
+
+- snapshot clarify constant pool
+
+- ctx harden budget ledger
+
+- wire trim frame slots
+
+- packaging drop pending discipline
+
+- lexer trim arena alignment
+
+- packaging stabilize journal chain
+
+- verifier clarify arena alignment
+
+- budget refactor fuzz harness
+
+- tests add context ring
+
+- snapshot tune pending discipline
+
+- fuzz drop arena alignment
+
+- interp drop dispatch loop
+
+- interp trim pending discipline
+
+- journal polish fork balance
+
+- wire rework exit codes
+
+- arena drop context ring
+
+- verifier clean up checksum path
+
+- tests extend lexer spans
+
+- asm prepare opcode table
+
+- packaging prepare stack depth checks
+
+- snapshot wire up type lattice
+
+- isa prepare opcode table
+
+- replay document context ring
+
+- journal clarify pending discipline
+
+- verifier stabilize type lattice
+
+- replay harden fuzz harness
+
+- arena fix journal chain
+
+- ctx clean up lexer spans
+
+- isa harden disassembler
+
+- cli trim disassembler
+
+- journal stabilize replay host
+
+- interp polish type lattice
+
+- verifier harden stack depth checks
+
+- lexer clarify dispatch loop
+
+- journal drop snapshot layout
+
+- budget document exit codes
+
+- snapshot tighten snapshot layout
+
+- journal refactor abstract interpretation
+
+- docs tighten label resolution
+
+- fuzz stabilize snapshot layout
+
+- tests refactor snapshot layout
+
+- fuzz fix journal chain
+
+- isa stabilize snapshot layout
+
+- cli rework disassembler
+
+- verifier fix disassembler
+
+- docs document dispatch loop
+
+- fuzz drop lexer spans
+
+- asm add stack depth checks
+
+- packaging simplify fuzz harness
+
+- isa clean up label resolution
