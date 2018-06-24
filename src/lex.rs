@@ -208,3 +208,73 @@ fn lex_string(bytes: &[u8], start: usize, line: u32, col: u32) -> Result<(String
                     Diag::new(Code::UnterminatedString, "string runs past end of line")
                         .at(Span::new(start as u32, i as u32, line, col)),
                 );
+            }
+            b'\\' => {
+                i += 1;
+                c += 1;
+                if i >= bytes.len() {
+                    break;
+                }
+                let esc = match bytes[i] {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b'\\' => '\\',
+                    b'"' => '"',
+                    b'0' => '\0',
+                    other => {
+                        return Err(Diag::new(
+                            Code::BadEscape,
+                            format!("unknown escape \\{}", other as char),
+                        )
+                        .at(Span::new(start as u32, i as u32, line, col)));
+                    }
+                };
+                s.push(esc);
+                i += 1;
+                c += 1;
+            }
+            _ => {
+                s.push(bytes[i] as char);
+                i += 1;
+                c += 1;
+            }
+        }
+    }
+    Err(
+        Diag::new(Code::UnterminatedString, "string reaches end of file").at(Span::new(
+            start as u32,
+            i as u32,
+            line,
+            col,
+        )),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lexes_directives_labels_and_ints() {
+        let toks = lex(".fn main() -> i32\nmain:\n    ldi -3\n    ret\n").unwrap();
+        let kinds: Vec<Tok> = toks.into_iter().map(|t| t.tok).collect();
+        assert_eq!(kinds[0], Tok::Directive("fn".into()));
+        assert!(kinds.contains(&Tok::Label("main".into())));
+        assert!(kinds.contains(&Tok::Int(-3)));
+    }
+
+    #[test]
+    fn strings_resolve_escapes() {
+        let toks = lex(".image \"a\\nb\"").unwrap();
+        assert_eq!(toks[1].tok, Tok::Str("a\nb".into()));
+    }
+
+    #[test]
+    fn unterminated_string_is_an_error() {
+        assert_eq!(
+            lex(".image \"oops").unwrap_err().code,
+            Code::UnterminatedString
+        );
+    }
+}
