@@ -5,10 +5,3 @@ on:
     branches: [main]
   pull_request:
 
-jobs:
-  rust:
-    name: Rust engine
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
