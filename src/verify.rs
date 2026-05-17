@@ -94,3 +94,100 @@ fn check_function(
                         )
                         .at_pc(pc));
                     }
+                    None => {
+                        return Err(Diag::new(
+                            Code::StackUnderflow,
+                            format!("{} underflows", d.op.mnemonic()),
+                        )
+                        .at_pc(pc));
+                    }
+                }
+            }
+            for push in insn.pushes {
+                stack_types.push(*push);
+                depth += 1;
+                if depth > i32::from(f.maxstack) {
+                    return Err(Diag::new(
+                        Code::MaxstackExceeded,
+                        format!("`{}` exceeds maxstack", f.name),
+                    )
+                    .at_pc(pc));
+                }
+            }
+        }
+
+        if matches!(d.op, Op::Ret | Op::Tail) && stack_types.contains(&Ty::Pending) {
+            return Err(Diag::new(Code::PendingEscape, "pending value live at return").at_pc(pc));
+        }
+        if matches!(d.op, Op::Checkpoint | Op::Fork | Op::Commit)
+            && stack_types.contains(&Ty::Pending)
+        {
+            return Err(
+                Diag::new(Code::LivePending, "pending value live at snapshot boundary").at_pc(pc),
+            );
+        }
+    }
+
+    if !insns
+        .iter()
+        .any(|d| matches!(d.op, Op::Ret | Op::Tail | Op::Halt | Op::Trap))
+    {
+        return Err(Diag::new(Code::BadTarget, format!("`{}` has no exit", f.name)).at_pc(0));
+    }
+
+    let metering: [Op; 4] = [Op::Reserve, Op::Spend, Op::Release, Op::QueryQ];
+    for (a, b) in g.back_edges() {
+        let window: Vec<Op> = insns[*a as usize..=*b as usize]
+            .iter()
+            .map(|d| d.op)
+            .collect();
+        if !window.iter().any(|op| metering.contains(op)) {
+            return Err(
+                Diag::new(Code::UnmeteredLoop, "loop has no metering instruction").at_pc(*a),
+            );
+        }
+    }
+
+    let balance = insns.iter().fold(0i32, |acc, d| {
+        acc + match d.op {
+            Op::Fork => 1,
+            Op::Commit | Op::Abort => -1,
+            _ => 0,
+        }
+    });
+    if balance != 0 {
+        return Err(Diag::new(Code::ForkImbalance, "unbalanced fork/commit/abort").at_pc(0));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asm::assemble;
+
+    fn admit_src(src: &str) -> Result<Image> {
+        admit(assemble("t.cdx", src)?)
+    }
+
+    #[test]
+    fn minimal_image_verifies() {
+        let img = admit_src(
+            ".isa cdx/4\n.image \"t\"\n.fn main() -> i32\n.maxstack 1\nmain:\n    ldi 0\n    ret\n",
+        )
+        .expect("minimal image builds");
+        assert!(img.is_verified());
+    }
+
+    #[test]
+    fn maxstack_violation_is_rejected() {
+        let src = ".fn main() -> i32\n.maxstack 1\nmain:\n    ldi 1\n    ldi 2\n    ret\n";
+        assert_eq!(admit_src(src).unwrap_err().code, Code::MaxstackExceeded);
+    }
+
+    #[test]
+    fn loop_without_metering_is_rejected() {
+        let src = ".fn main() -> i32\n.maxstack 1\nmain:\n    ldi 0\nloop:\n    brz done\n    br loop\ndone:\n    ret\n";
+        assert_eq!(admit_src(src).unwrap_err().code, Code::UnmeteredLoop);
+    }
+}
