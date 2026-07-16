@@ -16,3 +16,21 @@
   <g fill="none" stroke="#4a5262" stroke-width="2">
     <rect x="26" y="86" width="34" height="14" rx="3"/>
     <rect x="26" y="68" width="34" height="14" rx="3"/>
+    <rect x="26" y="50" width="34" height="14" rx="3"/>
+    <rect x="26" y="32" width="34" height="14" rx="3" stroke-dasharray="3 3"/>
+  </g>
+  <rect x="26" y="86" width="34" height="14" rx="3" fill="url(#ember)"/>
+  <rect x="26" y="68" width="34" height="14" rx="3" fill="url(#ember)" opacity="0.55"/>
+
+  <!-- dispatch arrow: stack -> pc -->
+  <path d="M64 75 L84 75" stroke="#c3ccd8" stroke-width="2" stroke-linecap="round"/>
+  <path d="M80 71 L85 75 L80 79" fill="none" stroke="#c3ccd8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- program counter ring, ember arc shows progress -->
+  <circle cx="94" cy="75" r="13" fill="none" stroke="#4a5262" stroke-width="3"/>
+  <path d="M94 62 A13 13 0 0 1 105 82" fill="none" stroke="url(#ember)" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- continuation glyph: snapshot boundary across the top -->
+  <path d="M30 24 L102 24" stroke="#e2521b" stroke-width="2" stroke-linecap="round" stroke-dasharray="6 4"/>
+  <circle cx="102" cy="24" r="3.5" fill="#e2521b"/>
+</svg>
