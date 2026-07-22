@@ -138,3 +138,143 @@ pub fn lex(source: &str) -> Result<Vec<Token>> {
                         i as u32 + 1,
                         line,
                         col,
+                    )),
+                );
+            }
+            b'(' | b')' | b',' => {
+                let name = (b as char).to_string();
+                out.push(Token {
+                    tok: Tok::Ident(name),
+                    span: Span::new(i as u32, i as u32 + 1, line, col),
+                });
+                i += 1;
+                col += 1;
+            }
+            _ if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = i;
+                let mut name = String::new();
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric()
+                        || bytes[i] == b'_'
+                        || bytes[i] == b'-'
+                        || bytes[i] == b'/')
+                {
+                    name.push(bytes[i] as char);
+                    i += 1;
+                    col += 1;
+                }
+                if i < bytes.len() && bytes[i] == b':' {
+                    out.push(Token {
+                        tok: Tok::Label(name),
+                        span: Span::new(start as u32, i as u32 + 1, line, col),
+                    });
+                    i += 1;
+                    col += 1;
+                } else {
+                    out.push(Token {
+                        tok: Tok::Ident(name),
+                        span: Span::new(start as u32, i as u32, line, col),
+                    });
+                }
+            }
+            _ => {
+                return Err(
+                    Diag::new(Code::StrayChar, format!("unexpected byte 0x{b:02X}")).at(Span::new(
+                        i as u32,
+                        i as u32 + 1,
+                        line,
+                        col,
+                    )),
+                );
+            }
+        }
+    }
+    out.push(Token {
+        tok: Tok::End,
+        span: Span::new(bytes.len() as u32, bytes.len() as u32, line, col),
+    });
+    Ok(out)
+}
+
+fn lex_string(bytes: &[u8], start: usize, line: u32, col: u32) -> Result<(String, usize, u32)> {
+    let mut i = start + 1;
+    let mut c = col + 1;
+    let mut s = String::new();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => return Ok((s, i + 1, c + 1)),
+            b'\n' => {
+                return Err(
+                    Diag::new(Code::UnterminatedString, "string runs past end of line")
+                        .at(Span::new(start as u32, i as u32, line, col)),
+                );
+            }
+            b'\\' => {
+                i += 1;
+                c += 1;
+                if i >= bytes.len() {
+                    break;
+                }
+                let esc = match bytes[i] {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b'\\' => '\\',
+                    b'"' => '"',
+                    b'0' => '\0',
+                    other => {
+                        return Err(Diag::new(
+                            Code::BadEscape,
+                            format!("unknown escape \\{}", other as char),
+                        )
+                        .at(Span::new(start as u32, i as u32, line, col)));
+                    }
+                };
+                s.push(esc);
+                i += 1;
+                c += 1;
+            }
+            _ => {
+                s.push(bytes[i] as char);
+                i += 1;
+                c += 1;
+            }
+        }
+    }
+    Err(
+        Diag::new(Code::UnterminatedString, "string reaches end of file").at(Span::new(
+            start as u32,
+            i as u32,
+            line,
+            col,
+        )),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lexes_directives_labels_and_ints() {
+        let toks = lex(".fn main() -> i32\nmain:\n    ldi -3\n    ret\n").unwrap();
+        let kinds: Vec<Tok> = toks.into_iter().map(|t| t.tok).collect();
+        assert_eq!(kinds[0], Tok::Directive("fn".into()));
+        assert!(kinds.contains(&Tok::Label("main".into())));
+        assert!(kinds.contains(&Tok::Int(-3)));
+    }
+
+    #[test]
+    fn strings_resolve_escapes() {
+        let toks = lex(".image \"a\\nb\"").unwrap();
+        assert_eq!(toks[1].tok, Tok::Str("a\nb".into()));
+    }
+
+    #[test]
+    fn unterminated_string_is_an_error() {
+        assert_eq!(
+            lex(".image \"oops").unwrap_err().code,
+            Code::UnterminatedString
+        );
+    }
+}
