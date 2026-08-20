@@ -216,3 +216,221 @@ codes! {
 pub struct Label {
     pub span: Span,
     pub note: String,
+}
+
+/// A diagnostic. `Display` renders the short form; [`Diag::render`] produces the
+/// annotated multi-line form when the source text is available.
+#[derive(Clone, Debug)]
+pub struct Diag {
+    pub code: Code,
+    pub message: String,
+    pub span: Span,
+    /// Additional locations, rendered in the order given. The verifier uses
+    /// these to name both predecessors of a bad merge.
+    pub labels: Vec<Label>,
+    /// Trailing `= note:` / `= help:` lines.
+    pub notes: Vec<String>,
+    /// Instruction index, when the diagnostic came from bytecode rather than
+    /// source. Rendered as a fallback location if the span is synthetic.
+    pub pc: Option<u32>,
+}
+
+impl Diag {
+    pub fn new(code: Code, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            span: Span::synthetic(),
+            labels: Vec::new(),
+            notes: Vec::new(),
+            pc: None,
+        }
+    }
+
+    #[must_use]
+    pub fn at(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+
+    #[must_use]
+    pub fn at_pc(mut self, pc: u32) -> Self {
+        self.pc = Some(pc);
+        self
+    }
+
+    #[must_use]
+    pub fn label(mut self, span: Span, note: impl Into<String>) -> Self {
+        self.labels.push(Label {
+            span,
+            note: note.into(),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.notes.push(note.into());
+        self
+    }
+
+    /// Render with source context, in the style the README shows. `name` is the
+    /// path printed in the location header.
+    ///
+    /// Falls back to the short form when the span is synthetic, which is the
+    /// common case for images assembled elsewhere and shipped without a debug
+    /// section.
+    #[must_use]
+    pub fn render(&self, name: &str, source: Option<&str>) -> String {
+        let mut out = format!("error[{}]: {}\n", self.code.as_str(), self.message);
+        let Some(src) = source.filter(|_| !self.span.is_synthetic()) else {
+            if let Some(pc) = self.pc {
+                out.push_str(&format!("  --> {name}:pc {pc:#06x}\n"));
+            }
+            for l in &self.labels {
+                out.push_str(&format!("  = at {:?}: {}\n", l.span, l.note));
+            }
+            for n in &self.notes {
+                out.push_str(&format!("  = {n}\n"));
+            }
+            return out;
+        };
+
+        let gutter = self.widest_line().to_string().len().max(2);
+        out.push_str(&format!(
+            "{:>w$}┌─ {}:{}:{}\n",
+            "",
+            name,
+            self.span.line,
+            self.span.col,
+            w = gutter + 1
+        ));
+        out.push_str(&format!("{:>w$}│\n", "", w = gutter + 1));
+        out.push_str(&Self::snippet(src, self.span, gutter, '^'));
+
+        for l in &self.labels {
+            if l.span.is_synthetic() {
+                continue;
+            }
+            out.push_str(&format!("{:>w$}·\n", "", w = gutter + 1));
+            out.push_str(&Self::snippet(src, l.span, gutter, '─'));
+            out.push_str(&format!("{:>w$}│ {}\n", "", l.note, w = gutter + 1));
+        }
+
+        out.push_str(&format!("{:>w$}│\n", "", w = gutter + 1));
+        for n in &self.notes {
+            out.push_str(&format!("{:>w$}= {}\n", "", n, w = gutter + 1));
+        }
+        out
+    }
+
+    fn widest_line(&self) -> u32 {
+        self.labels
+            .iter()
+            .map(|l| l.span.line)
+            .chain(core::iter::once(self.span.line))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// One `line │ text` row plus its underline. `caret` is `^` for the primary
+    /// span and `─` for secondary labels, matching the README's sample output.
+    fn snippet(src: &str, span: Span, gutter: usize, caret: char) -> String {
+        let Some(text) = src.lines().nth(span.line.saturating_sub(1) as usize) else {
+            return String::new();
+        };
+        let width = (span.hi.saturating_sub(span.lo) as usize).max(1);
+        let pad = span.col.saturating_sub(1) as usize;
+        format!(
+            "{:>gutter$}│ {}\n{:>gutter$}│ {}{}\n",
+            span.line,
+            text,
+            "",
+            " ".repeat(pad),
+            caret.to_string().repeat(width),
+        )
+    }
+}
+
+impl fmt::Display for Diag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code.as_str(), self.message)?;
+        if !self.span.is_synthetic() {
+            write!(f, " (at {:?})", self.span)?;
+        } else if let Some(pc) = self.pc {
+            write!(f, " (at pc {pc:#06x})")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Diag {}
+
+/// Crate-wide result type. Every fallible operation returns exactly one
+/// diagnostic; batch collection is the caller's job (see `asm::Assembler`,
+/// which accumulates so a bad file reports every error rather than the first).
+pub type Result<T> = core::result::Result<T, Diag>;
+
+/// Convenience constructor used throughout the crate.
+pub fn err<T>(code: Code, message: impl Into<String>) -> Result<T> {
+    Err(Diag::new(code, message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codes_are_unique_and_roundtrip() {
+        let mut seen: Vec<&str> = Code::all().iter().map(|c| c.as_str()).collect();
+        let n = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(n, seen.len(), "duplicate error code string");
+        for &c in Code::all() {
+            assert_eq!(Code::parse(c.as_str()), Some(c));
+            assert!(c.as_str().starts_with("E_"), "{c:?} lacks the E_ prefix");
+            assert!(!c.blurb().is_empty());
+        }
+        assert_eq!(Code::parse("E_NOT_A_CODE"), None);
+    }
+
+    #[test]
+    fn spans_merge_over_synthetics() {
+        let a = Span::new(4, 8, 2, 5);
+        let b = Span::new(20, 24, 7, 1);
+        assert_eq!(a.merge(b), Span::new(4, 24, 2, 5));
+        assert_eq!(a.merge(Span::synthetic()), a);
+        assert_eq!(Span::synthetic().merge(a), a);
+    }
+
+    #[test]
+    fn render_points_at_the_offending_column() {
+        let src = "        ldc       $sys\n        calltool  %rank\n        ret\n";
+        let d = Diag::new(Code::PendingEscape, "pending value reaches `ret` unawaited")
+            .at(Span::new(56, 59, 3, 9))
+            .label(Span::new(30, 45, 2, 9), "pending<str> produced here")
+            .note("a `pending` must be consumed by await/poll/cancel/select");
+        let out = d.render("triage.cdx", Some(src));
+        assert!(out.starts_with("error[E_PENDING_ESCAPE]:"));
+        assert!(out.contains("triage.cdx:3:9"));
+        assert!(out.contains("^^^"));
+        assert!(out.contains("pending<str> produced here"));
+        assert!(out.contains("= a `pending` must be"));
+    }
+
+    #[test]
+    fn render_falls_back_to_pc_without_source() {
+        let out = Diag::new(Code::DepthMerge, "depth 2 vs 3")
+            .at_pc(0x1a)
+            .render("i.cdxb", None);
+        assert!(out.contains("pc 0x001a"));
+    }
+
+    #[test]
+    fn phases_match_expectations() {
+        assert_eq!(Code::PendingEscape.phase(), Phase::Verify);
+        assert_eq!(Code::Diverged.phase(), Phase::Journal);
+        assert_eq!(Code::BadMagic.phase(), Phase::Load);
+    }
+}
