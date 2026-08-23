@@ -76,3 +76,82 @@
 //! let object = asm::assemble("main.cdx", include_str!("../examples/echo.cdx"))?;
 //! let image = verify::admit(object)?;                 // proves the invariants
 //! let mut vm = interp::Vm::new(&image, interp::Limits::default());
+//!
+//! let mut answer = None;
+//! let exit = loop {
+//!     match vm.step(answer.take())? {
+//!         trap::Step::Halted(code) => break code,
+//!         trap::Step::Trap(t) => answer = Some(host_perform(&t)?),
+//!     }
+//! };
+//! # let _ = exit;
+//! # fn host_perform(_: &trap::Trap) -> cindervm::Result<trap::Answer> { unimplemented!() }
+//! # Ok::<(), cindervm::Diag>(())
+//! ```
+//!
+//! ## What this crate is not
+//!
+//! It is not a language. `.cdx` is a macro assembler for tests and examples; the
+//! intended production path is [`asm::Builder`] driven by a higher-level
+//! frontend. It is also not a tool runtime — tool execution lives in the Go
+//! supervisor, on the other side of [`wire`], in a different process.
+
+#![deny(unsafe_code)]
+#![warn(missing_docs, unreachable_pub, elided_lifetimes_in_paths)]
+#![warn(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions, clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc, clippy::cast_possible_truncation)]
+
+pub mod asm;
+pub mod budget;
+pub mod cfg;
+pub mod cont;
+pub mod ctx;
+pub mod diag;
+pub mod disas;
+pub mod frame;
+pub mod hash;
+pub mod heap;
+pub mod image;
+pub mod interp;
+pub mod isa;
+pub mod journal;
+pub mod lex;
+pub mod replay;
+pub mod trap;
+pub mod value;
+pub mod verify;
+
+#[cfg(feature = "wire")]
+pub mod wire;
+
+pub use diag::{Code, Diag, Result};
+pub use image::Image;
+pub use interp::{Limits, Vm};
+pub use isa::{Op, ISA_VERSION};
+pub use trap::{Answer, Step, Trap};
+pub use value::{Handle, Tag, Value};
+
+/// Crate version, surfaced in image headers and the `cinder --version` banner.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Assemble, verify, and return a runnable image.
+///
+/// The common path, and the one that makes the ordering hard to get wrong:
+/// there is no way to reach an [`Image`] without passing through
+/// [`verify::admit`].
+pub fn build(name: &str, source: &str) -> Result<Image> {
+    verify::admit(asm::assemble(name, source)?)
+}
+
+#[cfg(test)]
+mod tests {
+    /// The public surface must not leak a way to build an unverified image; if
+    /// this ever compiles differently, invariant 3 has been broken.
+    #[test]
+    fn image_construction_goes_through_verify() {
+        let src = "        .isa cdx/4\n        .image \"t\"\n        .fn main() -> i32\n        .maxstack 1\nmain:\n        ldi 0\n        ret\n";
+        let img = crate::build("t.cdx", src).expect("minimal image builds");
+        assert!(img.is_verified());
+    }
+}
