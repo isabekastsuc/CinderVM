@@ -77,3 +77,83 @@ impl Frame {
 
     pub fn load_local(&self, idx: usize) -> Result<Value> {
         self.slots
+            .get(usize::from(self.maxstack) + idx)
+            .copied()
+            .ok_or_else(|| Diag::new(Code::StackUnderflow, "frame-local slot out of range"))
+    }
+
+    pub fn store_local(&mut self, idx: usize, v: Value) -> Result<()> {
+        let at = usize::from(self.maxstack) + idx;
+        let slot = self
+            .slots
+            .get_mut(at)
+            .ok_or_else(|| Diag::new(Code::StackUnderflow, "frame-local slot out of range"))?;
+        *slot = v;
+        Ok(())
+    }
+
+    /// Drop the top `n` operands.
+    pub fn drop_n(&mut self, n: usize) -> Result<()> {
+        if n > self.sp {
+            return Err(Diag::new(
+                Code::StackUnderflow,
+                "cannot drop below the stack base",
+            ));
+        }
+        self.sp -= n;
+        Ok(())
+    }
+
+    /// Pop `n` operands, first-pushed first.
+    pub fn pop_n(&mut self, n: usize) -> Result<Vec<Value>> {
+        if n > self.sp {
+            return Err(Diag::new(
+                Code::StackUnderflow,
+                "cannot pop below the stack base",
+            ));
+        }
+        let out = self.slots[self.sp - n..self.sp].to_vec();
+        self.sp -= n;
+        Ok(out)
+    }
+
+    /// Verify a static type assertion at the top of the stack.
+    pub fn check_top(&self, want: Ty) -> Result<()> {
+        let v = self.peek(0)?;
+        if v.ty().satisfies(want) {
+            Ok(())
+        } else {
+            Err(Diag::new(
+                Code::TagMismatch,
+                format!("expected {}, found {}", want.name(), v.ty().name()),
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_pop_and_locals_are_separated() {
+        let mut f = Frame::new(0, vec![Value::int(7)], 2, 8, 1);
+        f.push(Value::int(1)).unwrap();
+        f.store_local(0, Value::int(9)).unwrap();
+        assert_eq!(f.pop().unwrap().as_int().unwrap(), 1);
+        assert_eq!(f.load_local(0).unwrap().as_int().unwrap(), 9);
+        assert_eq!(f.pop().unwrap().as_int().unwrap(), 7);
+        assert!(f.pop().is_err(), "base underflow must error");
+    }
+
+    #[test]
+    fn maxstack_is_enforced() {
+        let mut f = Frame::new(0, Vec::new(), 0, 2, 0);
+        f.push(Value::int(1)).unwrap();
+        f.push(Value::int(2)).unwrap();
+        assert_eq!(
+            f.push(Value::int(3)).unwrap_err().code,
+            Code::MaxstackExceeded
+        );
+    }
+}
