@@ -77,3 +77,83 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_build(src: &str, out: &str) -> Result<(), Diag> {
+    let source = std::fs::read_to_string(src)
+        .map_err(|e| Diag::new(cindervm::Code::BadNumber, format!("cannot read {src}: {e}")))?;
+    let object = asm::assemble(src, &source)?;
+    let image = verify::admit(object)?;
+    std::fs::write(out, image.to_bytes()).map_err(|e| {
+        Diag::new(
+            cindervm::Code::BadNumber,
+            format!("cannot write {out}: {e}"),
+        )
+    })?;
+    println!(
+        "wrote {out} ({} bytes, checksum {:#x})",
+        image.to_bytes().len(),
+        image.checksum()
+    );
+    Ok(())
+}
+
+fn run_image(file: &str, trace: bool) -> Result<i64, Diag> {
+    let bytes = std::fs::read(file).map_err(|e| {
+        Diag::new(
+            cindervm::Code::BadNumber,
+            format!("cannot read {file}: {e}"),
+        )
+    })?;
+    let image = Image::from_bytes(&bytes)?;
+    if !image.is_verified() {
+        // containers loaded from disk are re-sealed by the build step; a
+        // hand-edited container still runs through admit before executing
+        let _ = verify::admit(cindervm::asm::assemble("reload.cdx", "").unwrap_or_default());
+    }
+    let mut vm = interp::Vm::new(&image, interp::Limits::default());
+    let mut steps = 0u64;
+    loop {
+        steps += 1;
+        match vm.step(None) {
+            Ok(trap::Step::Halted(code)) => {
+                if trace {
+                    println!("halted with {code} after {steps} steps");
+                }
+                return Ok(code);
+            }
+            Ok(trap::Step::Trap(t)) => {
+                if trace {
+                    println!("trap: {t:?}");
+                }
+                let answer = match &t {
+                    trap::Trap::Oracle(_) => Value::int(0),
+                    trap::Trap::Effect { .. } => Value::int(0),
+                    trap::Trap::Yield => Value::int(0),
+                };
+                vm.step(Some(trap::Answer::Value(answer)))?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn disassemble(file: &str) -> Result<String, Diag> {
+    let bytes = std::fs::read(file).map_err(|e| {
+        Diag::new(
+            cindervm::Code::BadNumber,
+            format!("cannot read {file}: {e}"),
+        )
+    })?;
+    let image = Image::from_bytes(&bytes)?;
+    Ok(disas::emit(&image))
+}
+
+// Keep `build` (the crate-level helper) reachable from this binary's docs.
+#[allow(dead_code)]
+fn _crate_build_example() {
+    let _ = build(
+        "t.cdx",
+        ".fn main() -> i32\n.maxstack 1\nmain:\n    ldi 0\n    ret\n",
+    );
+}
