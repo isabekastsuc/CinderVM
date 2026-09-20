@@ -245,7 +245,11 @@ impl Vm {
                     let hay = frame.pop()?;
                     let hay = self.arena.get(hay.as_handle()?)?.to_vec();
                     let needle = self.arena.get(needle.as_handle()?)?.to_vec();
-                    let pos = hay.windows(needle.len()).position(|w| w == needle);
+                    let pos = if needle.is_empty() {
+            Some(0)
+        } else {
+            hay.windows(needle.len()).position(|w| w == needle)
+        };
                     frame.push(Value::int(pos.map_or(-1, |p| p as i64)))?;
                 }
                 Op::Add => binop(&mut self.frames[fi], |a, b| a.wrapping_add(b))?,
@@ -565,6 +569,12 @@ fn binop(frame: &mut Frame, f: impl Fn(i64, i64) -> i64) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn find_with_empty_needle_returns_zero() {
+        let src = ".const e \"\"\n.fn main() -> i32\n.maxstack 4\nmain:\n    ldc e\n    ldc e\n    find\n    halt\n";
+        assert_eq!(run(src).unwrap(), 0);
+    }
+
     use super::*;
     use crate::asm::assemble;
     use crate::verify::admit;
