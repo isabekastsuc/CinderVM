@@ -300,3 +300,305 @@ impl Vm {
                     let a = frame.pop()?.as_int()?;
                     frame.push(Value::int(a.wrapping_shr((b & 63) as u32)))?;
                 }
+                Op::Br => {
+                    self.frames[fi].pc = d.b;
+                    advance = false;
+                }
+                Op::Brz | Op::Brnz => {
+                    let v = frame.pop()?.is_truthy();
+                    let take = if op == Op::Brz { !v } else { v };
+                    if take {
+                        self.frames[fi].pc = d.b;
+                        advance = false;
+                    }
+                }
+                Op::Call => {
+                    let target =
+                        self.image
+                            .funcs()
+                            .get(d.b as usize)
+                            .cloned()
+                            .ok_or_else(|| {
+                                Diag::new(Code::DanglingIndex, "call target out of range")
+                            })?;
+                    let args = frame.pop_n(target.args as usize)?;
+                    if self.frames.len() >= self.limits.max_frames {
+                        return Err(Diag::new(Code::BudgetExceeded, "frame limit exceeded"));
+                    }
+                    self.frames
+                        .push(Frame::new(d.b, args, 0, target.maxstack, target.returns));
+                    advance = false;
+                }
+                Op::Ret => {
+                    let returns = frame.returns;
+                    let values = frame.pop_n(returns as usize)?;
+                    self.frames.pop();
+                    if self.frames.is_empty() {
+                        self.halt =
+                            Some(values.first().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0));
+                    } else {
+                        let caller = self.frames.len() - 1;
+                        for v in values {
+                            self.frames[caller].push(v)?;
+                        }
+                    }
+                    advance = false;
+                }
+                Op::Tail => {
+                    let target =
+                        self.image
+                            .funcs()
+                            .get(d.b as usize)
+                            .cloned()
+                            .ok_or_else(|| {
+                                Diag::new(Code::DanglingIndex, "tail target out of range")
+                            })?;
+                    let args = frame.pop_n(target.args as usize)?;
+                    self.frames[fi] = Frame::new(d.b, args, 0, target.maxstack, target.returns);
+                    advance = false;
+                }
+                Op::Switch => {
+                    let v = frame.pop()?.as_int()?;
+                    let table = self
+                        .image
+                        .jump_tables()
+                        .get(d.b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let target = if v >= 0 && (v as usize) < table.len().saturating_sub(1) {
+                        table[v as usize]
+                    } else {
+                        table.last().copied().unwrap_or(0)
+                    };
+                    self.frames[fi].pc = target;
+                    advance = false;
+                }
+                Op::Trap => {
+                    let msg = self
+                        .image
+                        .constants()
+                        .get(d.b as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    return Err(Diag::new(
+                        Code::Trapped,
+                        String::from_utf8_lossy(&msg).into_owned(),
+                    ));
+                }
+                Op::Halt => {
+                    let code = frame.pop().map(|v| v.as_int().unwrap_or(0)).unwrap_or(0);
+                    self.frames.clear();
+                    self.halt = Some(code);
+                    advance = false;
+                }
+                Op::CallTool | Op::Spawn => {
+                    let list = frame.pop()?;
+                    let h = list.as_handle_of(Tag::List)?;
+                    let args = self.arena.get_list(h)?;
+                    let id = EffectId(self.next_effect);
+                    self.next_effect += 1;
+                    self.pending = Some(Trap::Effect {
+                        id,
+                        tool: d.b,
+                        args,
+                    });
+                    frame.push(Value::pending(id))?;
+                    advance = false;
+                }
+                Op::Await | Op::Poll | Op::Join | Op::Select | Op::Cancel => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::Fork => {
+                    if self.fork_depth > 0 {
+                        return Err(Diag::new(Code::ForkImbalance, "nested forks unsupported"));
+                    }
+                    self.fork_depth = 1;
+                    self.staged_arena = Some(self.arena.clone());
+                    frame.push(Value::int(0))?;
+                }
+                Op::Commit => {
+                    if let Some(staged) = self.staged_arena.take() {
+                        self.arena = staged;
+                    }
+                    self.fork_depth = 0;
+                }
+                Op::Abort => {
+                    self.staged_arena = None;
+                    self.fork_depth = 0;
+                }
+                Op::Checkpoint => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::YieldCtx => {
+                    self.pending = Some(Trap::Yield);
+                    advance = false;
+                }
+                Op::Resume => {}
+                Op::Reserve => {
+                    self.budget.reserve(d.a, d.b as i64)?;
+                }
+                Op::Release => {
+                    let amount = frame.pop()?.as_int()?;
+                    self.budget.release(d.a, amount)?;
+                }
+                Op::Spend => {
+                    let amount = frame.pop()?.as_int()?;
+                    self.budget.spend(d.a, amount)?;
+                }
+                Op::QueryQ => {
+                    let remaining = self.budget.remaining(d.a);
+                    frame.push(Value::int(remaining))?;
+                    self.pending = Some(Trap::Oracle(Op::QueryQ));
+                    advance = false;
+                }
+                Op::CtxPush => {
+                    let s = frame.pop()?.as_handle_of(Tag::Str)?;
+                    let bytes = self.arena.get(s)?.to_vec();
+                    self.ctx.push(d.a, &bytes)?;
+                }
+                Op::CtxPop => {
+                    self.ctx.pop_oldest(d.b as usize)?;
+                }
+                Op::CtxWin => {
+                    let h = self.arena.alloc_list(&self.ctx.window())?;
+                    frame.push(Value::list(h))?;
+                }
+                Op::CtxCost => {
+                    frame.push(Value::int(self.ctx.cost()))?;
+                }
+                Op::Now | Op::Rand | Op::Env | Op::Log => {
+                    self.pending = Some(Trap::Oracle(op));
+                    advance = false;
+                }
+            }
+        }
+        if advance && !self.frames.is_empty() {
+            self.frames[fi].pc += 1;
+        }
+        Ok(())
+    }
+
+    /// The trap the machine wants serviced, if any.
+    #[must_use]
+    pub fn pending_trap(&self) -> Option<Trap> {
+        self.pending.clone()
+    }
+
+    /// The exit code after `Step::Halted`.
+    #[must_use]
+    pub fn halted(&self) -> Option<i64> {
+        self.halt
+    }
+
+    #[must_use]
+    pub fn image(&self) -> &Image {
+        &self.image
+    }
+
+    #[must_use]
+    pub fn budget(&self) -> &Budget {
+        &self.budget
+    }
+
+    #[must_use]
+    pub fn arena_len(&self) -> usize {
+        self.arena.len()
+    }
+
+    #[must_use]
+    pub fn frame_depth(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub(crate) fn arena_bytes(&self) -> &[u8] {
+        self.arena.as_bytes()
+    }
+
+    pub(crate) fn restore_arena(&mut self, bytes: &[u8]) {
+        self.arena = Arena::from_bytes(bytes);
+    }
+
+    pub(crate) fn frames_snapshot(&self) -> Vec<Frame> {
+        self.frames.clone()
+    }
+
+    pub(crate) fn restore_frames(&mut self, frames: Vec<Frame>) {
+        self.frames = frames;
+    }
+
+    pub(crate) fn budget_snapshot(&self) -> Budget {
+        self.budget.clone()
+    }
+
+    pub(crate) fn restore_budget(&mut self, b: Budget) {
+        self.budget = b;
+    }
+
+    pub(crate) fn ctx_snapshot(&self) -> ContextRing {
+        self.ctx.clone()
+    }
+
+    pub(crate) fn restore_ctx(&mut self, c: ContextRing) {
+        self.ctx = c;
+    }
+}
+
+fn format_short(v: Value, arena: &Arena) -> String {
+    match v.ty() {
+        Ty::Int => v.as_int().unwrap_or(0).to_string(),
+        Ty::Str => arena
+            .get_str(v.as_handle().unwrap_or(Handle::EMPTY))
+            .unwrap_or("")
+            .to_string(),
+        _ => format!("{v:?}"),
+    }
+}
+
+fn binop(frame: &mut Frame, f: impl Fn(i64, i64) -> i64) -> Result<()> {
+    let b = frame.pop()?.as_int()?;
+    let a = frame.pop()?.as_int()?;
+    frame.push(Value::int(f(a, b)))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::asm::assemble;
+    use crate::verify::admit;
+
+    fn run(src: &str) -> Result<i64> {
+        let img = admit(assemble("t.cdx", src)?)?;
+        let mut vm = Vm::new(&img, Limits::default());
+        loop {
+            match vm.step(None)? {
+                Step::Halted(code) => return Ok(code),
+                Step::Trap(_) => {
+                    vm.step(Some(Answer::Value(Value::int(0))))?;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arithmetic_program_halts_with_sum() {
+        let src =
+            ".fn main() -> i32\n.maxstack 4\nmain:\n    ldi 2\n    ldi 3\n    add\n    halt\n";
+        assert_eq!(run(src).unwrap(), 5);
+    }
+
+    #[test]
+    fn divide_by_zero_traps() {
+        let src =
+            ".fn main() -> i32\n.maxstack 3\nmain:\n    ldi 1\n    ldi 0\n    div\n    halt\n";
+        assert_eq!(run(src).unwrap_err().code, Code::DivideByZero);
+    }
+
+    #[test]
+    fn strings_and_length() {
+        let src = ".const greeting \"hello\"\n.fn main() -> i32\n.maxstack 2\nmain:\n    ldc greeting\n    len\n    halt\n";
+        assert_eq!(run(src).unwrap(), 5);
+    }
+}
