@@ -109,7 +109,7 @@ pub fn assemble(name: &str, source: &str) -> Result<Object> {
                     i += 1;
                     match &toks[i].tok {
                         Tok::Int(n) => {
-                            maxstack = Some((*n).unsigned_abs().min(u16::MAX as u64) as u16);
+                            maxstack = Some((*n).unsigned_abs().min(4096) as u16);
                             i += 1;
                         }
                         _ => {
