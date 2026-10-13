@@ -246,10 +246,10 @@ impl Vm {
                     let hay = self.arena.get(hay.as_handle()?)?.to_vec();
                     let needle = self.arena.get(needle.as_handle()?)?.to_vec();
                     let pos = if needle.is_empty() {
-            Some(0)
-        } else {
-            hay.windows(needle.len()).position(|w| w == needle)
-        };
+                        Some(0)
+                    } else {
+                        hay.windows(needle.len()).position(|w| w == needle)
+                    };
                     frame.push(Value::int(pos.map_or(-1, |p| p as i64)))?;
                 }
                 Op::Add => binop(&mut self.frames[fi], |a, b| a.wrapping_add(b))?,

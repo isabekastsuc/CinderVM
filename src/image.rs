@@ -181,9 +181,9 @@ impl Image {
             ));
         }
         let Some(body_end) = bytes.len().checked_sub(8) else {
-        return Err(Diag::new(Code::BadMagic, "container too short"));
-    };
-    let body = &bytes[..body_end];
+            return Err(Diag::new(Code::BadMagic, "container too short"));
+        };
+        let body = &bytes[..body_end];
         let mut cur = Cursor {
             data: bytes,
             pos: 0,
