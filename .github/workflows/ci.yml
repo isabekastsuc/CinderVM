@@ -24,5 +24,9 @@ jobs:
       - name: CLI smoke
         run: |
           ./target/release/cinderc build examples/echo.cdx -o /tmp/echo.cdxb
-          ./target/release/cinderc run /tmp/echo.cdxb
           ./target/release/cinderc dis /tmp/echo.cdxb > /dev/null
+          set +e
+          ./target/release/cinderc run /tmp/echo.cdxb
+          code=$?
+          set -e
+          [ "$code" -eq 17 ] || { echo "echo.cdx returned $code, expected 17"; exit 1; }
