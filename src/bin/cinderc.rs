@@ -39,7 +39,7 @@ fn main() -> ExitCode {
                 .position(|a| a == "-o")
                 .and_then(|i| args.get(i + 1))
                 .cloned()
-                .unwrap_or_else(|| src.replace(".cdx", ".cdxb"));
+                .unwrap_or_else(|| std::path::Path::new(&src).with_extension("cdxb").to_string_lossy().to_string());
             match run_build(src, &out) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
