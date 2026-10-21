@@ -53,12 +53,12 @@ pub fn restore(vm: &mut Vm, bytes: &[u8]) -> Result<()> {
     let arena = c.take(arena_len)?;
     vm.restore_arena(arena);
 
-    let n_frames = u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes")) as usize;
+    let n_frames = (u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes")) as usize).min(1024);
     let mut frames = Vec::with_capacity(n_frames);
     for _ in 0..n_frames {
         let func = u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes"));
         let pc = u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes"));
-        let n_slots = u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes")) as usize;
+        let n_slots = (u32::from_le_bytes(c.take(4)?.try_into().expect("4 bytes")) as usize).min(65536);
         let mut slots = Vec::with_capacity(n_slots);
         for _ in 0..n_slots {
             let v = Value::read(c.take(16)?)?;
